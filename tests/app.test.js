@@ -16,6 +16,12 @@ function loadApp() {
       renderTicketQueue: typeof renderTicketQueue === "function" ? renderTicketQueue : null,
       renderCatalog: typeof renderCatalog === "function" ? renderCatalog : null,
       renderServiceLevels: typeof renderServiceLevels === "function" ? renderServiceLevels : null,
+      renderDashboard: typeof renderDashboard === "function" ? renderDashboard : null,
+      buildTicketIntakeTrend: typeof buildTicketIntakeTrend === "function" ? buildTicketIntakeTrend : null,
+      businessMinutesBetween: typeof businessMinutesBetween === "function" ? businessMinutesBetween : null,
+      responseMetricsByPriority: typeof responseMetricsByPriority === "function" ? responseMetricsByPriority : null,
+      activeTicketAgingBuckets: typeof activeTicketAgingBuckets === "function" ? activeTicketAgingBuckets : null,
+      ticketCountsByCategory: typeof ticketCountsByCategory === "function" ? ticketCountsByCategory : null,
       calculatePriority: typeof calculatePriority === "function" ? calculatePriority : null,
       catalog: CATALOG,
       upsertProblemRecord: typeof upsertProblemRecord === "function" ? upsertProblemRecord : null,
@@ -110,6 +116,38 @@ test("renders a problem map with related incident links and observed evidence", 
   assert.match(html, /Tickets relacionados/);
 });
 
+test("counts every ticket by catalog category while separating incidents and requests", () => {
+  const api = loadApp();
+  assert.equal(typeof api.ticketCountsByCategory, "function");
+  const counts = api.ticketCountsByCategory([
+    { categoryId: "payment-without-order", type: "Incidente" },
+    { categoryId: "payment-without-order", type: "Incidente" },
+    { categoryId: "payment-without-order", type: "Solicitud" },
+    { categoryId: "new-store", type: "Solicitud" },
+  ]);
+  assert.equal(counts.length, 8);
+  assert.deepEqual(Array.from(counts.slice(0, 2), (entry) => [entry.category.id, entry.incidents, entry.requests, entry.total]), [
+    ["payment-without-order", 2, 1, 3],
+    ["new-store", 0, 1, 1],
+  ]);
+  assert.equal(counts.filter((entry) => entry.total === 0).length, 6);
+});
+
+test("shows all-ticket category volume in the analysis view without changing the incident problem map", () => {
+  const api = loadApp();
+  api.state.tickets = [
+    { id: "BV-91", type: "Incidente", categoryId: "payment-without-order", priority: "P1", status: "Nuevo", brand: "Marca A", createdAt: "2026-10-26T12:00:00Z" },
+    { id: "BV-92", type: "Solicitud", categoryId: "payment-without-order", priority: "P3", status: "Cerrado", brand: "Marca A", createdAt: "2026-10-26T13:00:00Z" },
+  ];
+  const html = api.renderProblems();
+  assert.match(html, /Tickets ingresados por categoría/);
+  assert.match(html, /Incidente/);
+  assert.match(html, /Solicitud/);
+  assert.match(html, /Gráfico de todos los tickets agrupados por categoría/);
+  assert.match(html, /BV-91/);
+  assert.doesNotMatch(html, /BV-92/);
+});
+
 test("creates and updates a problem analysis record without changing its identifier", () => {
   const api = loadApp();
   assert.equal(typeof api.upsertProblemRecord, "function", "the problem analysis must be persistable");
@@ -180,9 +218,148 @@ test("keeps the phase-one catalog at four requests and four incidents", () => {
 test("shows internal SLO, OLA, and separate escalation paths", () => {
   const html = loadApp().renderServiceLevels();
   assert.match(html, /SLO internos/);
-  assert.match(html, /OLAs/);
-  assert.match(html, /N1 AM\/CS → N2 Tech → N3 proveedor/);
-  assert.match(html, /Tech Lead → directora de Tech \/ CEO/);
+  assert.match(html, /Acuerdos internos \(OLAs?\)/);
+  assert.match(html, /N1 AM\/CS/);
+  assert.match(html, /N2 Tech/);
+  assert.match(html, /N3 proveedor/);
+  assert.match(html, /Tech Lead/);
+  assert.match(html, /dirección \/ CEO/);
+});
+
+test("compares requester origins and active priorities on the dashboard", () => {
+  const api = loadApp();
+  assert.equal(typeof api.renderDashboard, "function");
+  api.state.tickets = [
+    { id: "BV-1", type: "Incidente", categoryId: "payment-without-order", priority: "P1", status: "Nuevo", requesterType: "Marca", brand: "Marca A", assignee: "Account Management", createdAt: "2026-10-01T12:00:00.000Z" },
+    { id: "BV-2", type: "Incidente", categoryId: "incorrect-inventory", priority: "P2", status: "En progreso", requesterType: "Consumidor", brand: "Marca A", assignee: "Customer Service", createdAt: "2026-10-01T13:00:00.000Z" },
+    { id: "BV-3", type: "Solicitud", categoryId: "shipping-rules", priority: "P3", status: "Cerrado", requesterType: "Marca", brand: "Marca B", assignee: "Account Management", createdAt: "2026-10-01T14:00:00.000Z" },
+  ];
+
+  const html = api.renderDashboard();
+  assert.match(html, /Origen de los tickets/);
+  assert.match(html, /Marcas<\/span><strong>2<\/strong>/);
+  assert.match(html, /Consumidores<\/span><strong>1<\/strong>/);
+  assert.match(html, /Prioridad de la cola activa/);
+  assert.match(html, /P1<\/span><strong>1<\/strong>/);
+  assert.match(html, /P2<\/span><strong>1<\/strong>/);
+  assert.match(html, /P3<\/span><strong>0<\/strong>/);
+  assert.match(html, /Tickets activos/);
+});
+
+test("builds a seven-day incident and request intake trend including empty days", () => {
+  const api = loadApp();
+  assert.equal(typeof api.buildTicketIntakeTrend, "function");
+  const now = new Date(2026, 9, 26, 12, 0, 0);
+  const trend = api.buildTicketIntakeTrend([
+    { type: "Incidente", createdAt: new Date(2026, 9, 26, 9).toISOString() },
+    { type: "Solicitud", createdAt: new Date(2026, 9, 26, 10).toISOString() },
+    { type: "Incidente", createdAt: new Date(2026, 9, 19, 23).toISOString() },
+  ], now);
+  assert.equal(trend.length, 7);
+  assert.deepEqual(Array.from(trend, (day) => [day.incidents, day.requests]), [
+    [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [1, 1],
+  ]);
+});
+
+test("measures first response only in weekday operating hours and handles weekends", () => {
+  const api = loadApp();
+  assert.equal(typeof api.businessMinutesBetween, "function");
+  assert.equal(api.businessMinutesBetween(new Date("2026-10-26T13:00:00Z"), new Date("2026-10-26T15:30:00Z")), 150);
+  assert.equal(api.businessMinutesBetween("2026-10-26T11:00:00Z", "2026-10-26T23:00:00Z"), 540);
+  assert.equal(api.businessMinutesBetween("2026-10-25T13:00:00Z", "2026-10-25T15:00:00Z"), 0);
+  assert.equal(api.businessMinutesBetween(new Date("2026-10-23T20:00:00Z"), new Date("2026-10-26T14:30:00Z")), 210);
+});
+
+test("summarizes first-response p50/p95 and target attainment by priority", () => {
+  const api = loadApp();
+  assert.equal(typeof api.responseMetricsByPriority, "function");
+  const metrics = api.responseMetricsByPriority([
+    ...[10, 40, 120].map((minutes, index) => ({ priority: "P1", createdAt: new Date(Date.UTC(2026, 9, 26, 13, index)).toISOString(), firstResponseAt: new Date(Date.UTC(2026, 9, 26, 13, index) + minutes * 60_000).toISOString() })),
+    { priority: "P2", createdAt: "2026-10-26T13:00:00.000Z", firstResponseAt: null },
+  ]);
+  assert.equal(metrics.P1.count, 3);
+  assert.equal(metrics.P1.p50, 40);
+  assert.equal(metrics.P1.p95, 112);
+  assert.equal(metrics.P1.withinTarget, 1);
+  assert.equal(metrics.P1.targetMinutes, 15);
+  assert.equal(metrics.P2.count, 0);
+});
+
+test("groups active queue age by priority using elapsed clock time, excluding resolved and closed", () => {
+  const api = loadApp();
+  assert.equal(typeof api.activeTicketAgingBuckets, "function");
+  const now = new Date("2026-10-26T12:00:00Z");
+  const tickets = [
+    { status: "Nuevo", priority: "P1", createdAt: new Date(now - 3 * 60 * 60_000).toISOString() },
+    { status: "En progreso", priority: "P2", createdAt: new Date(now - 8 * 60 * 60_000).toISOString() },
+    { status: "En espera", priority: "P3", createdAt: new Date(now - 2 * 24 * 60 * 60_000).toISOString() },
+    { status: "Resuelto", priority: "P1", createdAt: new Date(now - 5 * 24 * 60 * 60_000).toISOString() },
+    { status: "Cerrado", priority: "P2", createdAt: new Date(now - 5 * 24 * 60 * 60_000).toISOString() },
+  ];
+  const buckets = api.activeTicketAgingBuckets(tickets, now);
+  assert.deepEqual(Array.from(buckets, (bucket) => [bucket.label, bucket.P1, bucket.P2, bucket.P3]), [
+    ["<4 h", 1, 0, 0], ["4–24 h", 0, 1, 0], ["1–3 d", 0, 0, 1], [">3 d", 0, 0, 0],
+  ]);
+});
+
+test("dashboard explains the decision and limits of its three monitoring charts", () => {
+  const html = loadApp().renderDashboard();
+  assert.match(html, /Entrada diaria de tickets/);
+  assert.match(html, /class="legend-dot intake-incident"/);
+  assert.match(html, /class="legend-dot intake-request"/);
+  assert.match(html, /Primera respuesta por prioridad/);
+  assert.match(html, /p50/);
+  assert.match(html, /p95/);
+  assert.match(html, /Antigüedad de la cola activa/);
+  assert.match(html, /tiempo corrido/);
+  assert.match(html, /no equivale.*incumplimiento/i);
+  assert.match(html, /decisión/i);
+});
+
+test("keeps the dashboard concise without removing its operating rules or service navigation", () => {
+  const api = loadApp();
+  const html = api.renderDashboard();
+  assert.equal((html.match(/class="metric-card"/g) || []).length, 3);
+  assert.doesNotMatch(html, /Prioridad crítica/);
+  assert.doesNotMatch(html, /Un solo registro, dos tipos de demanda/);
+  assert.match(html, /Incidente = restaurar/i);
+  assert.match(html, /solicitud = cumplir/i);
+  assert.match(html, /Account Management y Customer Service comunican avances/i);
+  assert.match(html, /data-view="catalog"/);
+  assert.match(api.renderServiceLevels(), /Niveles de servicio/);
+});
+
+test("shows all-ticket active, resolved, and closed counts with distinct meanings", () => {
+  const api = loadApp();
+  api.state.view = "tickets";
+  api.state.statusFilter = "Resuelto";
+  api.state.tickets = [
+    { id: "BV-1", type: "Incidente", categoryId: "payment-without-order", priority: "P1", status: "En progreso", brand: "Marca A", channel: "Portal", assignee: "Tech", createdAt: "2026-10-01T12:00:00.000Z" },
+    { id: "BV-2", type: "Incidente", categoryId: "incorrect-inventory", priority: "P2", status: "Resuelto", brand: "Marca B", channel: "Correo", assignee: "CS", createdAt: "2026-10-01T13:00:00.000Z" },
+    { id: "BV-3", type: "Solicitud", categoryId: "shipping-rules", priority: "P3", status: "Cerrado", brand: "Marca C", channel: "Portal", assignee: "AM", createdAt: "2026-10-01T14:00:00.000Z" },
+  ];
+
+  const html = api.renderTicketQueue();
+  assert.match(html, /Estado de todos los tickets/);
+  assert.match(html, /Activos<\/span><strong>1<\/strong>/);
+  assert.match(html, /Resueltos<\/span><strong>1<\/strong>/);
+  assert.match(html, /Cerrados<\/span><strong>1<\/strong>/);
+  assert.match(html, /BV-2/);
+  assert.doesNotMatch(html, /BV-1|BV-3/);
+  assert.match(html, /<strong>Resuelto<\/strong> significa solución aplicada/);
+  assert.match(html, /<strong>Cerrado<\/strong> significa caso validado y finalizado/);
+});
+
+test("explains improvement indicators, targets, formulas, data coverage, and unmeasurable KPIs", () => {
+  const html = loadApp().renderServiceLevels();
+  assert.match(html, /Primera respuesta dentro del objetivo/);
+  assert.match(html, /≥ 95%/);
+  assert.match(html, /casos dentro del objetivo ÷ casos con respuesta registrada/i);
+  assert.match(html, /Resolución en primer contacto/);
+  assert.match(html, /No medible aún/);
+  assert.match(html, /satisfacción/i);
+  assert.match(html, /reaperturas/);
+  assert.match(html, /Muestra de demostración/);
 });
 
 test("uses the navy, black, white, and cyan brand palette without emoji presentation glyphs", () => {

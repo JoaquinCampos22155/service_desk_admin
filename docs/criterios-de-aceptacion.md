@@ -6,7 +6,7 @@ La rúbrica de Fase 2 distribuye su ponderación así:
 
 | Ponderación | Criterio | Evidencia en el producto |
 |---:|---|---|
-| 25% | Sistema de Service Desk configurado con los requerimientos. | Formulario de ingreso, colas de seguimiento, detalle e historial de comentarios, edición por soporte y gráfica por categoría. |
+| 25% | Sistema de Service Desk configurado con los requerimientos. | Formulario de ingreso, colas de seguimiento, detalle e historial de comentarios, edición por soporte; tablero de entrada diaria, primera respuesta por prioridad y antigüedad de cola; conteos compactos por origen/prioridad y gráfica de tickets por categoría/tipo. |
 | 50% | Identificación y categorización de servicios y problemas conforme a Fase 1. | Catálogo de ocho elementos, tipo solicitud/incidente, responsables AM/CS, prioridad por impacto/urgencia y mapa de patrones con análisis documentable. |
 | 25% | Demo y presentación. | Recorrido de marca y consumidor; mostrar registro, cola, detalle, actualización, prioridades, gráficas de tickets y análisis de problemas. |
 
@@ -23,7 +23,14 @@ Las casillas indican cobertura implementada y revisada en código/documentación
 - [x] Soporte puede editar categoría, prioridad, estado, responsable, impacto y urgencia.
 - [x] Soporte puede agregar comentarios visibles para el usuario y notas internas.
 - [x] Los comentarios públicos salen desde Account Management para marcas y Customer Service para consumidores, independientemente de quién investigue el caso.
-- [x] El gráfico agrupa todos los tickets guardados por categoría y distingue visualmente incidentes de solicitudes.
+- [x] El tablero grafica la entrada diaria de los últimos siete días y separa incidentes de solicitudes para identificar cambios de demanda.
+- [x] La primera respuesta se mide en minutos hábiles (lunes a viernes, 09:00–18:00 America/New_York), segmentada por P1/P2/P3; presenta p50, p95, tamaño de muestra, meta y porcentaje de casos dentro del objetivo.
+- [x] La antigüedad de la cola activa se agrupa en <4 h, 4–24 h, 1–3 d y >3 d, separada por prioridad; aclara que tiempo corrido no equivale automáticamente a incumplimiento del SLO.
+- [x] La gráfica de análisis cuenta todo el registro por categoría del catálogo y distingue incidentes de solicitudes; el mapa de problemas conserva únicamente incidentes y sus tickets relacionados.
+- [x] El tablero compara el origen de toda la demanda (marcas frente a consumidores) y distribuye las prioridades de la cola activa (P1/P2/P3).
+- [x] La vista Todos los tickets resume globalmente casos activos, resueltos y cerrados aunque se usen filtros; Resuelto y Cerrado tienen definiciones y estilos distintos.
+- [x] Niveles de servicio explica fórmula, meta, segmentación y disponibilidad de datos para cada indicador de mejora.
+- [x] Los indicadores que necesitan campos aún no capturados (triage, resolución en primer contacto o satisfacción) aparecen como no medibles, sin presentar datos ficticios como desempeño real.
 - [x] Los cambios y los tickets creados persisten al recargar la página en el mismo navegador.
 - [x] La sección Análisis de problemas agrupa incidentes por categoría, enlaza los tickets relacionados y grafica volumen y P1.
 - [x] Se puede documentar el estado, responsable, causa/hipótesis, workaround y acción permanente sin presentar una hipótesis como causa confirmada.
@@ -45,7 +52,7 @@ Las casillas indican cobertura implementada y revisada en código/documentación
 2. Customer Service registra un caso de consumidor con número de pedido; el caso muestra la marca, canal y seguimiento correspondiente.
 3. El equipo abre un ticket, registra una nota interna y una actualización visible, cambia responsable/estado y consulta el historial.
 4. La demo muestra una solicitud planificada en su cola independiente y explica que su objetivo es cumplirla, no restaurar una falla.
-5. El gráfico cuenta tickets por categoría y diferencia los volúmenes de incidentes y solicitudes.
+5. El tablero permite observar la tendencia diaria de incidentes/solicitudes, comparar p50/p95 de primera respuesta con las metas y encontrar casos envejecidos en la cola; el análisis agrupa todos los tickets por categoría y permite investigar patrones incidentes recurrentes.
 6. El presentador explica impacto, urgencia, prioridad, tiempos objetivo, SLO/OLA y la ruta de escalamiento aplicable.
 7. La sección de problemas ordena patrones con la heurística provisional, abre los tickets relacionados y documenta una investigación sin asumir una causa no comprobada.
 

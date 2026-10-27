@@ -191,6 +191,15 @@ function problemPatterns() {
   }).sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority] || b.brands.length - a.brands.length || b.reopenedCount - a.reopenedCount || b.count - a.count);
 }
 
+function ticketCountsByCategory(tickets) {
+  return CATALOG.map((category) => {
+    const categorized = tickets.filter((ticket) => ticket.categoryId === category.id);
+    const incidents = categorized.filter((ticket) => ticket.type === "Incidente").length;
+    const requests = categorized.filter((ticket) => ticket.type === "Solicitud").length;
+    return { category, incidents, requests, total: incidents + requests };
+  }).sort((a, b) => b.total - a.total);
+}
+
 function upsertProblemRecord(records, categoryId, values, relatedTicketIds, now) {
   const existing = records[categoryId] || {};
   const nextSequence = Math.max(0, ...Object.values(records).map((record) => Number(record.id?.match(/\d+$/)?.[0] || 0))) + 1;
@@ -220,6 +229,122 @@ function openTickets() {
   return state.tickets.filter((ticket) => !["Resuelto", "Cerrado"].includes(ticket.status));
 }
 
+function requesterOrigin(ticket) {
+  if (ticket.requesterType === "Consumidor") return "Consumidor";
+  if (ticket.requesterType === "Marca") return "Marca";
+  return String(ticket.channel || "").toLocaleLowerCase("es").includes("customer service") ? "Consumidor" : "Marca";
+}
+
+const SERVICE_TIME_ZONE = "America/New_York";
+const SERVICE_HOURS_START = 9;
+const SERVICE_HOURS_END = 18;
+const serviceTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: SERVICE_TIME_ZONE, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
+function zonedParts(date) {
+  return Object.fromEntries(serviceTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+}
+
+function localServiceTimeToUtc(year, month, day, hour) {
+  const targetUtc = Date.UTC(year, month - 1, day, hour);
+  let candidate = targetUtc;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const local = zonedParts(new Date(candidate));
+    const representedUtc = Date.UTC(Number(local.year), Number(local.month) - 1, Number(local.day), Number(local.hour), Number(local.minute));
+    candidate += targetUtc - representedUtc;
+  }
+  return candidate;
+}
+
+function businessMinutesBetween(start, end) {
+  const startMs = start && typeof start.getTime === "function" ? start.getTime() : new Date(start).getTime();
+  const endMs = end && typeof end.getTime === "function" ? end.getTime() : new Date(end).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  const localStart = zonedParts(new Date(startMs));
+  const localEnd = zonedParts(new Date(endMs));
+  let day = new Date(Date.UTC(Number(localStart.year), Number(localStart.month) - 1, Number(localStart.day)));
+  const lastDay = Date.UTC(Number(localEnd.year), Number(localEnd.month) - 1, Number(localEnd.day));
+  let minutes = 0;
+  while (day.getTime() <= lastDay) {
+    const parts = zonedParts(new Date(day.getTime() + 12 * 60 * 60_000));
+    if (!(["Sat", "Sun"].includes(parts.weekday))) {
+      const open = localServiceTimeToUtc(Number(parts.year), Number(parts.month), Number(parts.day), SERVICE_HOURS_START);
+      const close = localServiceTimeToUtc(Number(parts.year), Number(parts.month), Number(parts.day), SERVICE_HOURS_END);
+      const overlap = Math.max(0, Math.min(endMs, close) - Math.max(startMs, open));
+      minutes += overlap / 60_000;
+    }
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+  return Math.round(minutes);
+}
+
+function buildTicketIntakeTrend(tickets, now = new Date()) {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (6 - index));
+    const nextDay = new Date(date);
+    nextDay.setDate(date.getDate() + 1);
+    const dayTickets = tickets.filter((ticket) => {
+      const created = new Date(ticket.createdAt);
+      return Number.isFinite(created.getTime()) && created >= date && created < nextDay;
+    });
+    return {
+      date,
+      label: new Intl.DateTimeFormat("es", { weekday: "short", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }).format(date).replace(".", ""),
+      incidents: dayTickets.filter((ticket) => ticket.type === "Incidente").length,
+      requests: dayTickets.filter((ticket) => ticket.type === "Solicitud").length,
+    };
+  });
+}
+
+function percentile(values, fraction) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  return Math.round(sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower));
+}
+
+function responseMetricsByPriority(tickets) {
+  const targets = { P1: 15, P2: 60, P3: 240 };
+  return Object.fromEntries(["P1", "P2", "P3"].map((priority) => {
+    const responded = tickets.filter((ticket) => ticket.priority === priority && ticket.firstResponseAt && ticket.createdAt)
+      .map((ticket) => businessMinutesBetween(ticket.createdAt, ticket.firstResponseAt));
+    const withinTarget = responded.filter((minutes) => minutes <= targets[priority]).length;
+    return [priority, {
+      count: responded.length,
+      p50: percentile(responded, 0.5),
+      p95: percentile(responded, 0.95),
+      targetMinutes: targets[priority],
+      withinTarget,
+      attainment: responded.length ? Math.round(withinTarget / responded.length * 100) : null,
+    }];
+  }));
+}
+
+function activeTicketAgingBuckets(tickets, now = new Date()) {
+  const boundaries = [4 * 60 * 60_000, 24 * 60 * 60_000, 3 * 24 * 60 * 60_000];
+  const buckets = ["<4 h", "4–24 h", "1–3 d", ">3 d"].map((label) => ({ label, P1: 0, P2: 0, P3: 0, total: 0 }));
+  const nowMs = new Date(now).getTime();
+  for (const ticket of tickets) {
+    if (["Resuelto", "Cerrado"].includes(ticket.status)) continue;
+    const createdMs = new Date(ticket.createdAt).getTime();
+    if (!Number.isFinite(createdMs) || createdMs > nowMs) continue;
+    const age = nowMs - createdMs;
+    const index = boundaries.findIndex((boundary) => age < boundary);
+    const bucket = buckets[index < 0 ? buckets.length - 1 : index];
+    const priority = ["P1", "P2", "P3"].includes(ticket.priority) ? ticket.priority : "P3";
+    bucket[priority] += 1;
+    bucket.total += 1;
+  }
+  return buckets;
+}
+
 function viewTitle(view) {
   return ({ dashboard: "Resumen", tickets: "Todos los tickets", incidents: "Cola de incidentes", requests: "Cola de solicitudes", problems: "Análisis de problemas", catalog: "Catálogo del servicio", "service-levels": "Niveles de servicio" })[view] || "Resumen";
 }
@@ -239,39 +364,54 @@ function renderDashboard() {
   const active = openTickets();
   const incidents = active.filter((ticket) => ticket.type === "Incidente");
   const requests = active.filter((ticket) => ticket.type === "Solicitud");
-  const p1 = active.filter((ticket) => ticket.priority === "P1");
   const open = sortedTickets(active).slice(0, 5);
-  const categoryCounts = CATALOG.map((category) => ({
-    ...category,
-    incidents: state.tickets.filter((ticket) => ticket.categoryId === category.id && ticket.type === "Incidente").length,
-    requests: state.tickets.filter((ticket) => ticket.categoryId === category.id && ticket.type === "Solicitud").length,
-  })).sort((a, b) => b.incidents + b.requests - a.incidents - a.requests);
-  const chartMax = Math.max(1, ...categoryCounts.map((category) => category.incidents + category.requests));
+  const intake = buildTicketIntakeTrend(state.tickets);
+  const responseMetrics = responseMetricsByPriority(state.tickets);
+  const aging = activeTicketAgingBuckets(state.tickets);
+  const intakeMax = Math.max(1, ...intake.map((day) => day.incidents + day.requests));
+  const agingMax = Math.max(1, ...aging.map((bucket) => bucket.total));
+  const requesterCounts = {
+    Marca: state.tickets.filter((ticket) => requesterOrigin(ticket) === "Marca").length,
+    Consumidor: state.tickets.filter((ticket) => requesterOrigin(ticket) === "Consumidor").length,
+  };
+  const activePriorityCounts = Object.fromEntries(["P1", "P2", "P3"].map((priority) => [priority, active.filter((ticket) => ticket.priority === priority).length]));
+  const priorityMax = Math.max(1, ...Object.values(activePriorityCounts));
   return `
     <div class="page-heading"><div><div class="eyebrow">Vista de operación · ${formatDate(new Date().toISOString(), { year: "numeric" })}</div><h1>Buenos días, equipo</h1><p class="page-subtitle">Una vista clara de lo que necesita atención y quién lo está atendiendo.</p></div><button class="primary-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
     <section class="metric-grid" aria-label="Resumen de tickets">
       ${metricCard("Tickets activos", active.length, "Casos pendientes de atención", "▤", "green")}
       ${metricCard("Incidentes", incidents.length, "Cola de restauración", "◉", "red")}
       ${metricCard("Solicitudes", requests.length, "Cola de cumplimiento", "◇", "amber")}
-      ${metricCard("Prioridad crítica", p1.length, "Incidentes y solicitudes P1", "↗", "blue")}
     </section>
     <section class="dashboard-grid">
-      <div class="panel"><div class="panel-heading"><div><h2>Tickets registrados por categoría</h2><p>Conteo de todos los casos guardados; los segmentos separan incidentes y solicitudes.</p></div><div class="chart-legend"><span><i class="legend-dot"></i>Incidente</span><span><i class="legend-dot request"></i>Solicitud</span></div></div>
-        ${categoryCounts.length ? `<div class="category-chart" role="img" aria-label="Gráfico de tickets registrados agrupados por categoría">${categoryCounts.map((category) => {
-    const total = category.incidents + category.requests;
-    const scale = total / chartMax * 100;
-    const incidentWidth = total ? category.incidents / total * 100 : 0;
-    const requestWidth = total ? category.requests / total * 100 : 0;
-    return `<div class="chart-row"><span class="chart-label" title="${escapeHTML(category.name)}">${escapeHTML(category.name)}</span><div class="chart-track"><div class="chart-bar" style="width:${scale}%"><span class="incident-part" style="width:${incidentWidth}%"></span><span class="request-part" style="width:${requestWidth}%"></span></div></div><span class="chart-value">${total}</span></div>`;
-  }).join("")}</div>` : `<div class="chart-empty">No hay tickets activos para graficar.</div>`}
+      <div class="panel"><div class="panel-heading"><div><h2>Entrada diaria de tickets</h2><p>Últimos 7 días · permite detectar aumentos de demanda y separar interrupciones de solicitudes planificadas.</p></div><div class="chart-legend intake-legend"><span><i class="legend-dot intake-incident"></i>Incidente</span><span><i class="legend-dot intake-request"></i>Solicitud</span></div></div>
+        <div class="intake-chart" role="img" aria-label="Tickets creados por día durante los últimos siete días, separados entre incidentes y solicitudes">${intake.map((day) => { const total = day.incidents + day.requests; return `<div class="intake-day"><div class="intake-value">${total || ""}</div><div class="intake-column" title="${day.incidents} incidentes, ${day.requests} solicitudes"><i class="intake-incident" style="height:${day.incidents / intakeMax * 100}%"></i><i class="intake-request" style="height:${day.requests / intakeMax * 100}%"></i></div><span>${escapeHTML(day.label)}</span></div>`; }).join("")}</div>
+        <p class="chart-decision"><strong>Decisión:</strong> si la entrada crece varios días, revisar capacidad de AM/CS y las categorías que impulsan el aumento en Análisis de problemas.</p>
       </div>
       <div class="panel"><div class="panel-heading"><div><h2>Atención prioritaria</h2><p>Primero los casos de mayor impacto y urgencia.</p></div><button class="panel-action" data-view="tickets">Ver cola →</button></div>
         <div class="priority-list">${open.length ? open.map((ticket) => `<div class="priority-item" data-ticket-id="${escapeHTML(ticket.id)}"> <span class="priority-number ${ticket.priority.toLowerCase()}">${escapeHTML(ticket.priority)}</span><span class="priority-copy"><strong>${escapeHTML(ticket.subject)}</strong><small>${escapeHTML(ticket.brand)} · ${escapeHTML(ticket.assignee)}</small></span><span class="priority-age">${timeAgo(ticket.createdAt)}</span></div>`).join("") : `<div class="empty-state"><strong>Todo al día</strong>No hay casos pendientes de atención.</div>`}</div>
       </div>
     </section>
-    <section class="panel"><div class="panel-heading"><div><h2>Un solo registro, dos tipos de demanda</h2><p>El Service Desk centraliza los casos; cada cola protege su propio objetivo.</p></div><button class="panel-action" data-view="catalog">Explorar catálogo →</button></div>
-      <div class="queue-strip"><div class="queue-chip"><span>Incidentes · objetivo</span><strong>Restaurar</strong></div><div class="queue-chip"><span>Solicitudes · objetivo</span><strong>Cumplir</strong></div><div class="queue-chip"><span>Modelo de atención</span><strong>Virtual · N1 → N2 → N3</strong></div></div>
-    </section>`;
+    <section class="monitoring-grid" aria-label="Indicadores de respuesta y antigüedad de la cola">
+      <div class="panel response-panel"><div class="panel-heading"><div><h2>Primera respuesta por prioridad</h2><p>Minutos hábiles · lunes a viernes, 09:00–18:00 America/New_York · objetivo interno ≥95% dentro del SLO.</p></div></div>
+        <div class="response-table" role="table" aria-label="Percentiles de primera respuesta por prioridad">${["P1", "P2", "P3"].map((priority) => { const metric = responseMetrics[priority]; const scale = metric.p95 === null ? 0 : Math.min(100, metric.p95 / (metric.targetMinutes * 2) * 100); return `<div class="response-row ${priority.toLowerCase()}" role="row"><strong>${priority}</strong><span class="response-target">Meta ${metric.targetMinutes} min</span><div class="response-track" role="img" aria-label="${priority}: p95 ${metric.p95 === null ? "sin datos" : `${metric.p95} minutos`}, objetivo ${metric.targetMinutes} minutos"><i style="width:${scale}%"></i><b style="left:50%"></b></div><span class="response-percentiles">p50 <strong>${metric.p50 === null ? "—" : `${metric.p50}m`}</strong><br>p95 <strong>${metric.p95 === null ? "—" : `${metric.p95}m`}</strong></span><span class="response-attainment">${metric.attainment === null ? "Sin muestra" : `${metric.attainment}%`}<small>${metric.withinTarget}/${metric.count} en meta</small></span></div>`; }).join("")}</div>
+        <p class="chart-decision"><strong>Decisión:</strong> atender primero la prioridad cuyo p95 rebase su meta. La muestra es de demostración; con pocos casos el percentil es orientativo.</p>
+      </div>
+      <div class="panel aging-panel"><div class="panel-heading"><div><h2>Antigüedad de la cola activa</h2><p>Tiempo corrido desde creación · instantánea al abrir el tablero.</p></div></div>
+        <div class="aging-chart" role="img" aria-label="Tickets activos agrupados por tiempo corrido desde creación y desglosados por prioridad">${aging.map((bucket) => `<div class="aging-row"><span>${bucket.label}</span><div class="aging-track">${["P1", "P2", "P3"].map((priority) => `<i class="aging-${priority.toLowerCase()}" style="width:${bucket[priority] / agingMax * 100}%" title="${priority}: ${bucket[priority]}"></i>`).join("")}</div><strong>${bucket.total}</strong></div>`).join("")}</div>
+        <div class="chart-legend aging-legend"><span><i class="legend-dot aging-p1"></i>P1</span><span><i class="legend-dot aging-p2"></i>P2</span><span><i class="legend-dot aging-p3"></i>P3</span></div>
+        <p class="chart-caveat">Tiempo corrido no equivale por sí solo a incumplimiento de SLO. Revisar primero casos P1/P2 envejecidos y confirmar estado, bloqueos y próxima actualización.</p>
+      </div>
+    </section>
+    <section class="insight-grid" aria-label="Origen y prioridad de los tickets">
+      <div class="panel insight-panel origin-insight"><div class="panel-heading"><div><h2>Origen de los tickets</h2><p>Todos los casos registrados; permite distinguir demanda de marcas y consumidores.</p></div><span class="insight-tag">${state.tickets.length} total</span></div>
+        <div class="breakdown-list">${[["Marca", "Marcas", "brand"], ["Consumidor", "Consumidores", "consumer"]].map(([origin, label, tone]) => `<div class="breakdown-row ${tone}"><span>${label}</span><strong>${requesterCounts[origin]}</strong><div class="breakdown-track" aria-hidden="true"><i style="width:${state.tickets.length ? requesterCounts[origin] / state.tickets.length * 100 : 0}%"></i></div></div>`).join("")}</div>
+      </div>
+      <div class="panel insight-panel priority-insight"><div class="panel-heading"><div><h2>Prioridad de la cola activa</h2><p>Solo tickets pendientes; Resuelto y Cerrado no entran en esta distribución.</p></div><span class="insight-tag">${active.length} activos</span></div>
+        <div class="breakdown-list">${["P1", "P2", "P3"].map((priority) => `<div class="breakdown-row ${priority.toLowerCase()}"><span>${priority}</span><strong>${activePriorityCounts[priority]}</strong><div class="breakdown-track" aria-hidden="true"><i style="width:${activePriorityCounts[priority] / priorityMax * 100}%"></i></div></div>`).join("")}</div>
+      </div>
+    </section>
+    <aside class="dashboard-guidance" aria-label="Modelo de atención"><div><strong>Modelo de atención</strong><p>Las marcas envían tickets; Customer Service registra los casos de consumidores. Account Management y Customer Service comunican avances mientras Tech o el proveedor investiga. Incidente = restaurar; solicitud = cumplir.</p></div><button class="panel-action" data-view="catalog">Ver catálogo →</button></aside>`;
 }
 
 function metricCard(label, value, foot, icon, color) {
@@ -289,7 +429,13 @@ function renderTicketQueue() {
   const pageTitle = state.view === "incidents" ? "Incidentes" : state.view === "requests" ? "Solicitudes de servicio" : "Todos los tickets";
   const subtitle = state.view === "incidents" ? "Restaurar una operación interrumpida o degradada." : state.view === "requests" ? "Cumplir acciones acordadas, repetibles y planificables." : "El registro único del Service Desk, organizado en colas distintas.";
   const counts = { all: base.length, incidents: base.filter((ticket) => ticket.type === "Incidente").length, requests: base.filter((ticket) => ticket.type === "Solicitud").length };
+  const statusCounts = {
+    active: state.tickets.filter((ticket) => !["Resuelto", "Cerrado"].includes(ticket.status)).length,
+    resolved: state.tickets.filter((ticket) => ticket.status === "Resuelto").length,
+    closed: state.tickets.filter((ticket) => ticket.status === "Cerrado").length,
+  };
   return `<div class="page-heading"><div><div class="eyebrow">Operación · Bandeja de trabajo</div><h1>${pageTitle}</h1><p class="page-subtitle">${subtitle}</p></div><button class="primary-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
+    ${state.view === "tickets" ? `<section class="status-overview" aria-label="Estado de todos los tickets"><div class="status-overview-heading"><h2>Estado de todos los tickets</h2><span>Conteos globales · no cambian con los filtros</span></div><div class="status-overview-grid"><div class="status-total active"><span>Activos</span><strong>${statusCounts.active}</strong></div><div class="status-total resolved"><span>Resueltos</span><strong>${statusCounts.resolved}</strong></div><div class="status-total closed"><span>Cerrados</span><strong>${statusCounts.closed}</strong></div></div><p class="status-definitions"><span><strong>Resuelto</strong> significa solución aplicada, pendiente de confirmación o cierre.</span><span><strong>Cerrado</strong> significa caso validado y finalizado.</span></p></section>` : ""}
     <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>Registro de casos</h2><p>Ordenado por prioridad; P1 aparece antes que P2 y P3.</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select><select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select></div></div>
     <div class="queue-tabs" role="tablist"><button class="queue-tab ${selectedType === "Todos" ? "active" : ""}" data-type-filter="Todos">Todos<span>${counts.all}</span></button><button class="queue-tab ${selectedType === "Incidente" ? "active" : ""}" data-type-filter="Incidente">Incidentes<span>${counts.incidents}</span></button><button class="queue-tab ${selectedType === "Solicitud" ? "active" : ""}" data-type-filter="Solicitud">Solicitudes<span>${counts.requests}</span></button></div>
     <div class="ticket-table-wrap"><table class="ticket-table"><thead><tr><th>Ticket</th><th>Tipo / categoría</th><th>Marca y canal</th><th>Prioridad</th><th>Estado</th><th>Responsable</th><th>Creado</th></tr></thead><tbody>${filtered.length ? filtered.map(ticketRow).join("") : `<tr><td colspan="7" class="table-empty">No hay tickets que coincidan con estos filtros.</td></tr>`}</tbody></table></div></section>
@@ -318,7 +464,8 @@ function renderProblems() {
   const patterns = problemPatterns();
   const candidates = patterns.filter((pattern) => pattern.isCandidate);
   const totalIncidents = patterns.reduce((total, pattern) => total + pattern.count, 0);
-  const chartMax = Math.max(1, ...patterns.map((pattern) => pattern.count));
+  const ticketCategoryCounts = ticketCountsByCategory(state.tickets);
+  const ticketCategoryMax = Math.max(1, ...ticketCategoryCounts.map((item) => item.total));
   return `<div class="page-heading"><div><div class="eyebrow">Mejora continua · análisis basado en tickets</div><h1>Análisis de problemas</h1><p class="page-subtitle">Agrupa incidentes por categoría, enlaza sus casos y documenta la investigación de recurrencias.</p></div><button class="primary-button" data-view="incidents">Abrir cola de incidentes →</button></div>
     <div class="section-note"><strong>Lectura responsable:</strong> el patrón por categoría es una señal para investigar, no una causa raíz confirmada. Orden provisional: prioridad, marcas afectadas, reaperturas y volumen. Un patrón con dos o más incidentes o algún P1 se marca para investigación; ambos criterios deben validarse con Bevstack.</div>
     <section class="metric-grid" aria-label="Resumen del análisis de problemas">
@@ -328,8 +475,8 @@ function renderProblems() {
       ${metricCard("Casos reabiertos", patterns.reduce((total, pattern) => total + pattern.reopenedCount, 0), "Señal para revisar recurrencia", "↻", "amber")}
     </section>
     <section class="dashboard-grid problem-analysis-grid">
-      <div class="panel"><div class="panel-heading"><div><h2>Incidentes por patrón de categoría</h2><p>Volumen observado; P1 se muestra aparte.</p></div></div>
-        ${patterns.length ? `<div class="problem-chart" role="img" aria-label="Gráfico de incidentes agrupados por categoría">${patterns.map((pattern) => `<div class="problem-chart-row"><span class="chart-label" title="${escapeHTML(pattern.category.name)}">${escapeHTML(pattern.category.name)}</span><div class="chart-track"><div class="problem-chart-bar" style="width:${pattern.count / chartMax * 100}%"></div></div><strong class="chart-value">${pattern.count}</strong><span class="problem-p1-count">${pattern.p1Count} P1</span></div>`).join("")}</div>` : `<div class="empty-state"><strong>Aún no hay incidentes</strong>Al registrarlos, el análisis agrupará patrones por categoría.</div>`}
+      <div class="panel"><div class="panel-heading"><div><h2>Tickets ingresados por categoría</h2><p>Conteo de todo el registro; los segmentos separan incidentes y solicitudes.</p></div><div class="chart-legend"><span><i class="legend-dot"></i>Incidente</span><span><i class="legend-dot request"></i>Solicitud</span></div></div>
+        ${ticketCategoryCounts.some((item) => item.total) ? `<div class="category-chart" role="img" aria-label="Gráfico de todos los tickets agrupados por categoría">${ticketCategoryCounts.map((item) => { const scale = item.total / ticketCategoryMax * 100; const incidentWidth = item.total ? item.incidents / item.total * 100 : 0; const requestWidth = item.total ? item.requests / item.total * 100 : 0; return `<div class="chart-row"><span class="chart-label" title="${escapeHTML(item.category.name)}">${escapeHTML(item.category.name)}</span><div class="chart-track"><div class="chart-bar" style="width:${scale}%"><span class="incident-part" style="width:${incidentWidth}%"></span><span class="request-part" style="width:${requestWidth}%"></span></div></div><span class="chart-value">${item.total}</span></div>`; }).join("")}</div>` : `<div class="empty-state"><strong>Aún no hay tickets</strong>Al registrarlos, aquí verás el volumen por categoría y tipo.</div>`}
       </div>
       <div class="panel problem-method"><div class="panel-heading"><div><h2>De incidente a problema</h2><p>Investigar causa y evitar que los síntomas vuelvan a ocurrir.</p></div></div><ol><li>Detectar recurrencia, prioridad, marcas y reaperturas.</li><li>Relacionar los tickets del patrón.</li><li>Investigar la causa con Tech y registrar workaround.</li><li>Documentar solución permanente y comprobar que no se repita.</li></ol><div class="problem-cause-note"><strong>Sin evidencia, no se atribuye causa:</strong> cada análisis inicia pendiente de investigación.</div></div>
     </section>
@@ -344,13 +491,27 @@ function renderProblems() {
 
 function renderServiceLevels() {
   const priorityRows = ["P1", "P2", "P3"].map((priority) => `<tr><td><strong>${priority}</strong></td><td>${PRIORITY_TARGETS[priority].response}</td><td>${PRIORITY_TARGETS[priority].resolution}</td><td>${priority === "P3" ? "3 días hábiles" : PRIORITY_TARGETS[priority].resolution}</td></tr>`).join("");
+  const responded = state.tickets.filter((ticket) => ticket.firstResponseAt).length;
+  const terminal = state.tickets.filter((ticket) => ["Resuelto", "Cerrado"].includes(ticket.status));
+  const resolvedWithTime = terminal.filter((ticket) => ticket.resolvedAt).length;
+  const reopened = terminal.filter((ticket) => Number(ticket.reopenedCount || 0) > 0).length;
   return `<div class="page-heading"><div><div class="eyebrow">Gestión del servicio · Objetivos medibles</div><h1>Niveles de servicio</h1><p class="page-subtitle">Metas visibles para las marcas y acuerdos internos que permiten cumplirlas.</p></div></div>
     <div class="section-note"><strong>Distinción para esta demo:</strong> la Fase 1 fija metas mensuales de desempeño de 95%. Como no define una consecuencia contractual por incumplimiento, aquí se presentan como <strong>SLO internos</strong>. Un SLA formal con la marca requiere acordar la consecuencia.</div>
-    <section class="levels-grid"><div class="panel"><div class="panel-heading"><div><h2>Metas por prioridad</h2><p>Ventana de medición del SLO: mensual, según prioridad.</p></div></div><table class="sla-table"><thead><tr><th>Prioridad</th><th>Primera respuesta</th><th>Restaurar incidente</th><th>Cumplir solicitud</th></tr></thead><tbody>${priorityRows}</tbody></table><div class="service-window" style="margin-top:13px"><span class="service-window-icon">◷</span><div><strong>Horario de atención</strong><br/>Lunes a viernes, 9:00 a. m. a 6:00 p. m., hora del Este de EE. UU. Fuera de horario se escala la afectación crítica.</div></div><div class="info-banner" style="margin-top:12px"><strong>Ventana de medición:</strong> al menos 95% de los casos respondidos, resueltos/restaurados y registrados/asignados dentro del objetivo correspondiente, revisado mensualmente. El indicador de solicitudes mide cumplimiento; el de incidentes mide restauración.</div></div>
-      <div class="panel"><div class="panel-heading"><div><h2>Cadena de compromisos</h2><p>Los acuerdos internos deben caber dentro de la meta ofrecida a la marca.</p></div></div><div class="sla-chain"><div class="chain-row"><strong>Account Management / Customer Service</strong><span class="chain-arrow">→</span><span>Registrar y asignar<br/><b>P1 10 min · P2 30 min · P3 1 h</b></span></div><div class="chain-row"><strong>Team de Tech</strong><span class="chain-arrow">→</span><span>Iniciar revisión<br/><b>P1 15 min · P2 1 h · P3 4 h</b></span></div><div class="chain-row"><strong>Directora de Tech</strong><span class="chain-arrow">→</span><span>Revisar escalación crítica<br/><b>Máximo 30 min</b></span></div><div class="chain-row"><strong>Developer externo</strong><span class="chain-arrow">→</span><span>Confirmar recepción<br/><b>Máximo 2 h cuando aplique</b></span></div></div><div class="info-banner" style="margin-top:12px"><strong>UC por validar:</strong> la dependencia con developers o proveedores requiere confirmar el compromiso externo y comprobar que el camino crítico cabe dentro del objetivo de resolución al cliente.</div></div>
+    <section class="levels-grid"><div class="panel levels-targets"><div class="panel-heading"><div><h2>Metas por prioridad</h2><p>Ventana de medición del SLO: mensual, según prioridad.</p></div><span class="section-marker blue">SLO</span></div><table class="sla-table"><thead><tr><th>Prioridad</th><th>Primera respuesta</th><th>Restaurar incidente</th><th>Cumplir solicitud</th></tr></thead><tbody>${priorityRows}</tbody></table><div class="service-window"><span class="service-window-icon">◷</span><div><strong>Horario de atención</strong><br/>Lunes a viernes, 9:00 a. m. a 6:00 p. m., hora del Este de EE. UU. Fuera de horario se escala la afectación crítica.</div></div><div class="info-banner"><strong>Cómo leer la meta:</strong> cada SLO se evalúa mensualmente; el objetivo es cumplir al menos 95% de los casos elegibles. Incidente mide restauración del servicio; solicitud mide entrega de la acción solicitada.</div></div>
+      <div class="panel levels-chain"><div class="panel-heading"><div><h2>Acuerdos internos (OLA)</h2><p>Los tiempos internos sostienen la meta de cara a la marca.</p></div><span class="section-marker cyan">OLA</span></div><div class="sla-chain"><div class="chain-row"><strong>Account Management / Customer Service</strong><span class="chain-arrow">→</span><span>Registrar y asignar<br/><b>P1 10 min · P2 30 min · P3 1 h</b></span></div><div class="chain-row"><strong>Team de Tech</strong><span class="chain-arrow">→</span><span>Iniciar revisión<br/><b>P1 15 min · P2 1 h · P3 4 h</b></span></div><div class="chain-row"><strong>Directora de Tech</strong><span class="chain-arrow">→</span><span>Revisar escalación crítica<br/><b>Máximo 30 min</b></span></div><div class="chain-row"><strong>Developer externo</strong><span class="chain-arrow">→</span><span>Confirmar recepción<br/><b>Máximo 2 h cuando aplique</b></span></div></div><div class="info-banner"><strong>Dependencia externa:</strong> validar el compromiso del proveedor (UC) y que el recorrido completo deje margen para cumplir la meta al usuario.</div></div>
     </section>
-    <section class="panel" style="margin-top:15px"><div class="panel-heading"><div><h2>Escalamientos: dos rutas</h2><p>El equipo aplica el movimiento que desbloquea el caso; ambos pueden coexistir.</p></div></div><div class="queue-strip"><div class="queue-chip"><span>Funcional · más conocimiento</span><strong>N1 AM/CS → N2 Tech → N3 proveedor</strong></div><div class="queue-chip"><span>Jerárquico · más autoridad</span><strong>Tech Lead → directora de Tech / CEO</strong></div><div class="queue-chip"><span>Comunicación al usuario</span><strong>AM o CS conserva seguimiento</strong></div></div></section>
-    <section class="panel" style="margin-top:15px"><div class="panel-heading"><div><h2>Indicadores de mejora</h2><p>Segmentar por marca, tipo de usuario, tipo de demanda y categoría para que el promedio no esconda una mala experiencia.</p></div></div><div class="queue-strip"><div class="queue-chip"><span>Service Desk</span><strong>Primera respuesta</strong></div><div class="queue-chip"><span>Service Desk</span><strong>Resolución en primer contacto</strong></div><div class="queue-chip"><span>Service Desk</span><strong>Satisfacción y reaperturas</strong></div><div class="queue-chip"><span>Niveles de servicio</span><strong>Objetivos cumplidos</strong></div><div class="queue-chip"><span>Niveles de servicio</span><strong>OLAs que sostienen cada SLO</strong></div><div class="queue-chip"><span>Experiencia</span><strong>Brecha entre métricas y satisfacción</strong></div></div></section>`;
+    <section class="panel escalation-panel"><div class="panel-heading"><div><h2>Escalamiento y comunicación</h2><p>Escalar cambia quién resuelve; no quién mantiene informado al usuario.</p></div></div><div class="escalation-grid"><div class="escalation-route functional"><span>Funcional · conocimiento técnico</span><strong>N1 AM/CS <i>→</i> N2 Tech <i>→</i> N3 proveedor</strong></div><div class="escalation-route hierarchical"><span>Jerárquico · autoridad o recursos</span><strong>Tech Lead <i>→</i> dirección / CEO</strong></div><div class="escalation-route communication"><span>Comunicación visible al usuario</span><strong>AM para marcas · CS para consumidores</strong></div></div></section>
+    <section class="improvement-section"><div class="panel-heading"><div><div class="eyebrow">Revisión mensual · ciclo de mejora</div><h2>Indicadores de mejora</h2><p>Qué se mide, cómo se calcula, qué meta aplica y qué información falta para tomar decisiones.</p></div><span class="section-marker navy">SLI / SLO</span></div>
+      <div class="indicator-grid">
+        <article class="indicator-card response-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · experiencia</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Primera respuesta dentro del objetivo</h3><p>Casos dentro del objetivo ÷ casos con respuesta registrada. Segmentar por prioridad, marca y origen.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${responded} de ${state.tickets.length} tickets tienen primera respuesta registrada.</span></div></article>
+        <article class="indicator-card resolution-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · resultado</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Restauración o cumplimiento en plazo</h3><p>Casos resueltos dentro del objetivo ÷ casos resueltos elegibles. Incidentes restaurados; solicitudes cumplidas.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${resolvedWithTime} de ${terminal.length} tickets resueltos/cerrados tienen fecha de resolución.</span></div></article>
+        <article class="indicator-card assignment-indicator"><div class="indicator-top"><span class="indicator-kind">SLO interno</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Registro, prioridad y asignación</h3><p>Casos registrados, priorizados y asignados dentro del tiempo de triage ÷ casos recibidos; revisión mensual.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Falta registrar cuándo se completó el triage y la asignación.</span></div></article>
+        <article class="indicator-card first-contact-indicator"><div class="indicator-top"><span class="indicator-kind">Eficacia · sin meta acordada</span><span class="indicator-target neutral">Definir umbral</span></div><h3>Resolución en primer contacto</h3><p>Casos resueltos sin transferencia ni contacto adicional ÷ casos atendidos. Ayuda a detectar fricción en N1.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Registrar resolución en primer contacto y número de contactos.</span></div></article>
+        <article class="indicator-card reopen-indicator"><div class="indicator-top"><span class="indicator-kind">Recurrencia · sin meta acordada</span><span class="indicator-target neutral">Definir umbral</span></div><h3>Reaperturas</h3><p>Casos reabiertos ÷ casos resueltos/cerrados. Revisar tendencia por marca y categoría como señal de solución incompleta.</p><div class="indicator-evidence"><strong>Muestra de demostración</strong><span>${reopened} de ${terminal.length} tickets resueltos/cerrados tienen al menos una reapertura.</span></div></article>
+        <article class="indicator-card satisfaction-indicator"><div class="indicator-top"><span class="indicator-kind">Experiencia · sin meta acordada</span><span class="indicator-target neutral">Definir encuesta</span></div><h3>Satisfacción</h3><p>Promedio de encuesta posterior al cierre y tasa de respuesta; comparar con reaperturas y cumplimiento del SLO.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Definir escala, momento de encuesta y campo de respuesta.</span></div></article>
+      </div>
+      <div class="measurement-note"><strong>Lectura honesta de datos:</strong> los conteos de cobertura y reapertura corresponden a tickets ficticios para la demo, no son resultados reales de Bevstack. Para cumplimiento porcentual se necesitan marcas de tiempo confiables y cálculo del horario hábil acordado.</div>
+    </section>`;
 }
 
 function showToast(message, type = "success") {
