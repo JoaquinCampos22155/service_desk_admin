@@ -59,6 +59,10 @@ En el Static Site `bevstack-service-desk`, abre **Environment** y agrega `VITE_S
 - La app no presenta un guardado exitoso cuando Supabase rechaza una escritura o no está disponible.
 - El historial descargable de actividad no forma parte de esta etapa.
 
+### Poblar el tablero con tickets de demostración
+
+Si quieres que el resumen y las gráficas tengan datos iniciales, abre [`supabase/seeds/demo_tickets.sql`](supabase/seeds/demo_tickets.sql), copia su contenido en **Supabase → SQL Editor → New query** y ejecútalo. Inserta 24 tickets ficticios fechados dentro de los últimos siete días, con marcas y consumidores de demostración, sin información personal real. Los IDs `DEMO-` evitan duplicados si vuelves a ejecutar el script. Estos registros quedan en la base compartida y cuentan en las métricas; para retirarlos, el archivo incluye una consulta de limpieza comentada que puedes ejecutar por separado.
+
 ## Pruebas
 
 Opcionalmente, con Node.js instalado, ejecuta la suite desde la raíz del repositorio:
