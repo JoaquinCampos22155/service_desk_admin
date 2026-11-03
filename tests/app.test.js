@@ -52,6 +52,7 @@ function loadApp(storage = { getItem: () => null, setItem() {} }, repository = {
     ["#app-content", { innerHTML: "" }],
     ["#page-crumb", { textContent: "" }],
     ["#toast-region", { append() {} }],
+    ["#detail-conflict-message", { hidden: true, textContent: "" }],
   ]);
   const serviceDeskData = {
     async updateTicket(ticket) { return { ...ticket, updatedAt: new Date().toISOString() }; },
@@ -87,6 +88,7 @@ function loadApp(storage = { getItem: () => null, setItem() {} }, repository = {
   vm.createContext(context);
   vm.runInContext(source, context, { filename: appPath });
   context.__testApi.state.tickets = context.__testApi.seedTickets();
+  context.__testApi.elements = elements;
   return context.__testApi;
 }
 
@@ -624,6 +626,32 @@ test("ticket state changes only after the shared repository confirms the update"
   const rejected = await failure.saveTicketDraft(original, { ...original, status: "Cerrado" });
   assert.equal(rejected, null);
   assert.equal(failure.state.tickets[0].status, "Nuevo");
+});
+
+test("concurrent edit conflict reloads server state without replacing the open form", async () => {
+  const latest = { id: "BV-CONFLICT", status: "En progreso", updatedAt: "2026-11-02T12:10:00Z" };
+  const api = loadApp(undefined, {
+    async updateTicket() { const error = new Error("conflict"); error.name = "TicketConflictError"; throw error; },
+    async load() { return { tickets: [latest], customCategories: [] }; },
+  });
+  const original = { id: "BV-CONFLICT", status: "Nuevo", updatedAt: "2026-11-02T12:00:00Z" };
+  api.state.tickets = [original];
+  const result = await api.saveTicketDraft(original, { ...original, subject: "Cambios sin guardar" });
+  assert.equal(result, null);
+  assert.equal(api.state.tickets[0].status, "En progreso");
+  assert.equal(api.elements.get("#app-content").innerHTML, "");
+  assert.equal(api.elements.get("#detail-conflict-message").hidden, false);
+  assert.match(api.elements.get("#detail-conflict-message").textContent, /tus campos siguen aquí/);
+
+  const refreshFailure = loadApp(undefined, {
+    async updateTicket() { const error = new Error("conflict"); error.name = "TicketConflictError"; throw error; },
+    async load() { throw new Error("offline"); },
+  });
+  const before = { id: "BV-CONFLICT-2", status: "Nuevo", updatedAt: "2026-11-02T12:00:00Z" };
+  refreshFailure.state.tickets = [before];
+  await refreshFailure.saveTicketDraft(before, { ...before, subject: "Draft" });
+  assert.equal(refreshFailure.state.tickets[0].status, "Nuevo");
+  assert.match(refreshFailure.elements.get("#detail-conflict-message").textContent, /no se pudieron recargar/);
 });
 
 test("category editor exposes the type, explanation, reporter, and first-line owner as required fields", () => {

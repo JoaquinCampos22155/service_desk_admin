@@ -46,6 +46,10 @@ La publishable key queda visible en la app web; las políticas RLS limitan las o
 
 Para recuperación de contraseña, Auth envía un enlace al correo y regresa al origen actual. El equipo puede cambiar su contraseña desde ese enlace.
 
+## Configurar el sitio en Render
+
+En el Static Site `bevstack-service-desk`, abre **Environment** y agrega `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` con los mismos valores de `.env.local`. Vite incorpora estas variables durante el build; después de guardarlas, inicia un deploy manual desde Render para que el sitio use la configuración nueva. No agregues claves secretas o `service_role` al frontend.
+
 ## Datos que se comparten
 
 - Tickets y comentarios se leen y guardan en la tabla compartida `tickets`.

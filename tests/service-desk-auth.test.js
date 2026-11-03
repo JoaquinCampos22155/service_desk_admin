@@ -30,6 +30,23 @@ test("signed-out session is reported to the guard without loading ticket data", 
   assert.deepEqual(harness.calls, [["getSession"]]);
 });
 
+test("password recovery event is observed before initial-session fallback", async () => {
+  let recoverySession;
+  const harness = createAuthHarness({
+    async getSession() {
+      harness.calls.push(["getSession"]);
+      recoverySession = { access_token: "recovery-token", user: { email: "ops@bevstack.com" } };
+      harness.emit("PASSWORD_RECOVERY", recoverySession);
+      return { data: { session: recoverySession }, error: null };
+    },
+  });
+  const events = [];
+  await harness.auth.start({ onSession: (session, event) => events.push([event, session]) });
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], "PASSWORD_RECOVERY");
+  assert.equal(events[0][1].access_token, "recovery-token");
+});
+
 test("sign-in and sign-out change the guarded session", async () => {
   const harness = createAuthHarness();
   const sessions = [];

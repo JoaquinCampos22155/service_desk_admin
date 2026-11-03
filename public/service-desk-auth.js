@@ -13,14 +13,22 @@
     if (!client?.auth) throw new ServiceDeskAuthError("La autenticación de Supabase no está disponible.");
     return {
       async start(callbacks = {}) {
-        const { data, error } = await client.auth.getSession();
-        if (error) throw new ServiceDeskAuthError(error.message || "No se pudo recuperar la sesión.", error);
+        let initialSessionEvent = false;
+        let recoveryEvent = false;
         const result = client.auth.onAuthStateChange((event, session) => {
+          if (event === "INITIAL_SESSION") initialSessionEvent = true;
+          if (event === "PASSWORD_RECOVERY") recoveryEvent = true;
           callbacks.onAuthEvent?.(event, session);
           callbacks.onSession?.(session || null, event);
         });
-        callbacks.onSession?.(data.session || null, "INITIAL_SESSION");
-        return result?.data?.subscription;
+        const subscription = result?.data?.subscription;
+        const { data, error } = await client.auth.getSession();
+        if (error) {
+          subscription?.unsubscribe();
+          throw new ServiceDeskAuthError(error.message || "No se pudo recuperar la sesión.", error);
+        }
+        if (!initialSessionEvent && !recoveryEvent) callbacks.onSession?.(data.session || null, "INITIAL_SESSION");
+        return subscription;
       },
       async signIn(email, password) {
         const { data, error } = await client.auth.signInWithPassword({ email: String(email).trim(), password });
