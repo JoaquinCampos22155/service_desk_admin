@@ -28,6 +28,8 @@ function loadApp(storage = { getItem: () => null, setItem() {} }) {
       confirmStatusChange: typeof confirmStatusChange === "function" ? confirmStatusChange : null,
       cancelStatusChange: typeof cancelStatusChange === "function" ? cancelStatusChange : null,
       statusChangeDialogMarkup: typeof statusChangeDialogMarkup === "function" ? statusChangeDialogMarkup : null,
+      sortTicketRows: typeof sortTicketRows === "function" ? sortTicketRows : null,
+      cycleTicketSort: typeof cycleTicketSort === "function" ? cycleTicketSort : null,
       createFormMarkup: typeof createFormMarkup === "function" ? createFormMarkup : null,
       seedTickets: typeof seedTickets === "function" ? seedTickets : null,
       refreshStaleDemoDates: typeof refreshStaleDemoDates === "function" ? refreshStaleDemoDates : null,
@@ -204,6 +206,47 @@ test("filters the support queue by selected priority", () => {
   const html = api.renderTicketQueue();
   assert.match(html, /BV-P1/);
   assert.doesNotMatch(html, /BV-P3/);
+});
+
+test("ticket table sorting cycles through ascending, descending, and default order", () => {
+  const api = loadApp();
+  api.state.ticketSort = null;
+  assert.equal(api.cycleTicketSort("priority").direction, "asc");
+  assert.equal(api.cycleTicketSort("priority").direction, "desc");
+  assert.equal(api.cycleTicketSort("priority"), null);
+  assert.equal(api.cycleTicketSort("createdAt").direction, "asc");
+  assert.equal(api.cycleTicketSort("createdAt").key, "createdAt");
+});
+
+test("ticket table sorting orders priority, status, assignee, and creation date both ways", () => {
+  const api = loadApp();
+  const tickets = [
+    { id: "BV-A", priority: "P2", status: "En espera", assignee: "Zoë", createdAt: "2026-02-01T12:00:00Z" },
+    { id: "BV-B", priority: "P1", status: "Nuevo", assignee: "Alice", createdAt: "2026-03-01T12:00:00Z" },
+    { id: "BV-C", priority: "P3", status: "Cerrado", assignee: "Bob", createdAt: "2026-01-01T12:00:00Z" },
+  ];
+  const expected = {
+    priority: { asc: ["BV-B", "BV-A", "BV-C"], desc: ["BV-C", "BV-A", "BV-B"] },
+    status: { asc: ["BV-B", "BV-A", "BV-C"], desc: ["BV-C", "BV-A", "BV-B"] },
+    assignee: { asc: ["BV-B", "BV-C", "BV-A"], desc: ["BV-A", "BV-C", "BV-B"] },
+    createdAt: { asc: ["BV-C", "BV-A", "BV-B"], desc: ["BV-B", "BV-A", "BV-C"] },
+  };
+  for (const [key, orders] of Object.entries(expected)) {
+    for (const [direction, ids] of Object.entries(orders)) {
+      api.state.ticketSort = { key, direction };
+      assert.deepEqual([...api.sortTicketRows(tickets)].map((ticket) => ticket.id), ids, `${key} ${direction}`);
+    }
+  }
+});
+
+test("all-ticket table adds sort controls only to the four requested columns", () => {
+  const api = loadApp();
+  api.state.view = "tickets";
+  const html = api.renderTicketQueue();
+  for (const key of ["priority", "status", "assignee", "createdAt"]) {
+    assert.match(html, new RegExp(`data-sort-key="${key}"`));
+  }
+  assert.equal((html.match(/data-sort-key=/g) || []).length, 4);
 });
 
 test("removes triage as a ticket state and migrates saved tickets into progress", () => {

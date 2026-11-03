@@ -217,12 +217,16 @@ h1 { margin-bottom: 7px; font: 700 clamp(23px, 3vw, 30px)/1.2 Manrope, sans-seri
 .ticket-table-wrap { overflow-x: auto; }
 .ticket-table { width: 100%; border-collapse: collapse; min-width: 760px; }
 .ticket-table th { padding: 10px 11px; color: #98a29e; background: #fbfcfb; border-bottom: 1px solid #edf0ed; font-size: 8px; font-weight: 700; letter-spacing: .6px; text-align: left; text-transform: uppercase; }
+.ticket-table th.sortable-heading { white-space: nowrap; }
+.sort-control { width: 19px; height: 19px; margin-left: 4px; padding: 0; border: 1px solid #d9e3ec; border-radius: 5px; background: #fff; color: #7c8b9a; font-size: 11px; line-height: 1; vertical-align: middle; cursor: pointer; }
+.sort-control:hover, .sort-control:focus-visible { border-color: #8eb8de; color: #1d66ae; outline: none; }
+.sort-control.active { border-color: #a9c9e6; background: #eef6fd; color: #155eaa; font-weight: 800; }
 .ticket-table th:first-child, .ticket-table td:first-child { padding-left: 17px; }
 .ticket-table td { padding: 11px; border-bottom: 1px solid #f0f2f0; color: #5f716a; font-size: 9px; white-space: nowrap; }
 .ticket-table tbody tr { cursor: pointer; transition: background .12s; }
 .ticket-table tbody tr:hover { background: #fafcfb; }
 .ticket-table tbody tr:last-child td { border-bottom: 0; }
-.kanban-board { width: 100%; display: grid; grid-auto-columns: minmax(245px, 1fr); grid-auto-flow: column; align-items: start; gap: 12px; overflow-x: auto; padding: 13px; overscroll-behavior-x: contain; }
+.kanban-board { width: 100%; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: start; gap: 8px; overflow-x: visible; padding: 10px; }
 .kanban-column { min-width: 0; overflow: hidden; border: 1px solid #dbe4ed; border-top: 3px solid #8ca7c0; border-radius: 9px; background: #f4f7fb; }
 .kanban-column.status-new { border-top-color: #4f86cb; }
 .kanban-column.status-progress { border-top-color: #32a8d1; }
@@ -243,7 +247,7 @@ h1 { margin-bottom: 7px; font: 700 clamp(23px, 3vw, 30px)/1.2 Manrope, sans-seri
 .kanban-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kanban-card h4 { margin: 9px 0 5px; color: #263b4f; font: 700 10px/1.45 Manrope, sans-serif; overflow-wrap: anywhere; }
 .kanban-card p { margin: 0; color: #718196; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
-.kanban-card-footer { margin-top: 9px; padding-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #edf1f5; }
+.kanban-card-footer { margin-top: 9px; padding-top: 8px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; border-top: 1px solid #edf1f5; }
 .kanban-card-footer > span { min-width: 0; color: #738195; font-size: 8px; overflow-wrap: anywhere; }
 .kanban-change-button { flex: 0 0 auto; padding: 4px 6px; border: 1px solid #cddceb; border-radius: 5px; background: #f7fbff; color: #285a96; font-size: 8px; font-weight: 700; cursor: pointer; }
 .kanban-change-button:hover { background: #edf5fc; }
@@ -415,6 +419,7 @@ h1 { margin-bottom: 7px; font: 700 clamp(23px, 3vw, 30px)/1.2 Manrope, sans-seri
   .topbar { padding-right: 23px; padding-left: 23px; }
   .dashboard-grid, .levels-grid, .problem-analysis-grid { grid-template-columns: 1fr; }
   .indicator-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kanban-board { grid-template-columns: none; grid-auto-columns: minmax(190px, 1fr); grid-auto-flow: column; gap: 10px; overflow-x: auto; overscroll-behavior-x: contain; }
 }
 @media (max-width: 760px) {
   .sidebar { position: static; width: auto; height: auto; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--line); }

@@ -77,6 +77,7 @@ const state = {
   search: "",
   statusFilter: "Todos los estados",
   priorityFilter: "Todas las prioridades",
+  ticketSort: null,
   selectedTicketId: null,
   pendingStatusChange: null,
   tickets: loadTickets(),
@@ -253,6 +254,39 @@ function updateNavCounts() {
 function sortedTickets(tickets) {
   const rank = { P1: 1, P2: 2, P3: 3 };
   return [...tickets].sort((a, b) => rank[a.priority] - rank[b.priority] || new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+function sortTicketRows(tickets) {
+  const sort = state.ticketSort;
+  if (!sort) return sortedTickets(tickets);
+  const priorityRank = { P1: 1, P2: 2, P3: 3 };
+  const statusRank = Object.fromEntries(STATUSES.map((status, index) => [status, index]));
+  const direction = sort.direction === "desc" ? -1 : 1;
+  const compareValues = (left, right) => {
+    if (sort.key === "priority") return ((priorityRank[left.priority] || 0) - (priorityRank[right.priority] || 0)) * direction;
+    if (sort.key === "status") return ((statusRank[left.status] ?? STATUSES.length) - (statusRank[right.status] ?? STATUSES.length)) * direction;
+    if (sort.key === "assignee") return String(left.assignee || "").localeCompare(String(right.assignee || ""), "es", { sensitivity: "base" }) * direction;
+    if (sort.key === "createdAt") return ((Date.parse(left.createdAt) || 0) - (Date.parse(right.createdAt) || 0)) * direction;
+    return 0;
+  };
+  const fallbackRank = { P1: 1, P2: 2, P3: 3 };
+  return [...tickets].sort((left, right) => compareValues(left, right) || (fallbackRank[left.priority] || 0) - (fallbackRank[right.priority] || 0) || new Date(left.createdAt) - new Date(right.createdAt));
+}
+
+function cycleTicketSort(key) {
+  if (!["priority", "status", "assignee", "createdAt"].includes(key)) return state.ticketSort;
+  if (state.ticketSort?.key !== key) state.ticketSort = { key, direction: "asc" };
+  else if (state.ticketSort.direction === "asc") state.ticketSort = { key, direction: "desc" };
+  else state.ticketSort = null;
+  return state.ticketSort;
+}
+
+function ticketSortHeader(label, key) {
+  const active = state.ticketSort?.key === key;
+  const direction = active ? state.ticketSort.direction : "normal";
+  const icon = direction === "asc" ? "↑" : direction === "desc" ? "↓" : "↕";
+  const description = direction === "asc" ? "ascendente; pulsa para descendente" : direction === "desc" ? "descendente; pulsa para orden normal" : "orden normal; pulsa para ascendente";
+  return `<th class="sortable-heading"><span>${label}</span><button type="button" class="sort-control ${active ? `active ${direction}` : ""}" data-sort-key="${key}" aria-label="Ordenar por ${label.toLocaleLowerCase("es")}: ${description}" title="${description}">${icon}</button></th>`;
 }
 
 function problemPatterns() {
@@ -534,11 +568,12 @@ function renderTicketQueue() {
   const selectedType = state.view === "incidents" ? "Incidente" : state.view === "requests" ? "Solicitud" : state.typeFilter;
   const isBoard = ["incidents", "requests"].includes(state.view);
   const base = state.tickets.filter((ticket) => (selectedType === "Todos" || ticket.type === selectedType) && (isBoard || state.statusFilter === "Todos los estados" || ticket.status === state.statusFilter) && (state.priorityFilter === "Todas las prioridades" || ticket.priority === state.priorityFilter));
-  const filtered = sortedTickets(base.filter((ticket) => {
+  const matching = base.filter((ticket) => {
     const needle = state.search.trim().toLocaleLowerCase("es");
     const category = categoryById(ticket.categoryId).name;
     return !needle || [ticket.id, ticket.subject, ticket.brand, ticket.assignee, category, ticket.orderId].some((value) => String(value || "").toLocaleLowerCase("es").includes(needle));
-  }));
+  });
+  const filtered = (isBoard ? sortedTickets : sortTicketRows)(matching);
   const pageTitle = state.view === "incidents" ? "Incidentes" : state.view === "requests" ? "Solicitudes de servicio" : "Todos los tickets";
   const subtitle = state.view === "incidents" ? "Restaurar una operación interrumpida o degradada." : state.view === "requests" ? "Cumplir acciones acordadas, repetibles y planificables." : "El registro único del Service Desk, organizado en colas distintas.";
   const counts = { all: state.tickets.length, incidents: state.tickets.filter((ticket) => ticket.type === "Incidente").length, requests: state.tickets.filter((ticket) => ticket.type === "Solicitud").length };
@@ -549,9 +584,9 @@ function renderTicketQueue() {
   };
   return `<div class="page-heading"><div><h1>${pageTitle}</h1><p class="page-subtitle">${subtitle}</p></div><button class="primary-button create-ticket-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
     ${state.view === "tickets" ? `<section class="status-overview" aria-label="Estado de todos los tickets"><div class="status-overview-heading"><h2>Estado de todos los tickets</h2><span>Conteos globales · no cambian con los filtros</span></div><div class="status-overview-grid"><div class="status-total active"><span>Activos</span><strong>${statusCounts.active}</strong></div><div class="status-total resolved"><span>Resueltos</span><strong>${statusCounts.resolved}</strong></div><div class="status-total closed"><span>Cerrados</span><strong>${statusCounts.closed}</strong></div></div><p class="status-definitions"><span><strong>Resuelto</strong> significa solución aplicada, pendiente de confirmación o cierre.</span><span><strong>Cerrado</strong> significa caso validado y finalizado.</span></p></section>` : ""}
-    <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>${isBoard ? "Tablero de trabajo" : "Registro de casos"}</h2><p>${isBoard ? "Arrastra una tarjeta a otra columna para cambiar su estado; confirmarás el movimiento antes de guardarlo." : "Ordenado por prioridad; P1 aparece antes que P2 y P3."}</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select>${isBoard ? "" : `<select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select>`}</div></div>
+    <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>${isBoard ? "Tablero de trabajo" : "Registro de casos"}</h2><p>${isBoard ? "Arrastra una tarjeta a otra columna para cambiar su estado; confirmarás el movimiento antes de guardarlo." : "Orden inicial por prioridad (P1 a P3). Usa los controles de columna para cambiar el orden."}</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select>${isBoard ? "" : `<select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select>`}</div></div>
     <div class="queue-tabs" role="tablist"><button class="queue-tab ${selectedType === "Todos" ? "active" : ""}" data-type-filter="Todos">Todos<span>${counts.all}</span></button><button class="queue-tab ${selectedType === "Incidente" ? "active" : ""}" data-type-filter="Incidente">Incidentes<span>${counts.incidents}</span></button><button class="queue-tab ${selectedType === "Solicitud" ? "active" : ""}" data-type-filter="Solicitud">Solicitudes<span>${counts.requests}</span></button></div>
-    ${isBoard ? renderKanbanBoard(filtered) : `<div class="ticket-table-wrap"><table class="ticket-table"><thead><tr><th>Ticket</th><th>Tipo / categoría</th><th>Marca y canal</th><th>Prioridad</th><th>Estado</th><th>Responsable</th><th>Creado</th></tr></thead><tbody>${filtered.length ? filtered.map(ticketRow).join("") : `<tr><td colspan="7" class="table-empty">No hay tickets que coincidan con estos filtros.</td></tr>`}</tbody></table></div>`}</section>
+    ${isBoard ? renderKanbanBoard(filtered) : `<div class="ticket-table-wrap"><table class="ticket-table"><thead><tr><th>Ticket</th><th>Tipo / categoría</th><th>Marca y canal</th>${ticketSortHeader("Prioridad", "priority")}${ticketSortHeader("Estado", "status")}${ticketSortHeader("Responsable", "assignee")}${ticketSortHeader("Creado", "createdAt")}</tr></thead><tbody>${filtered.length ? filtered.map(ticketRow).join("") : `<tr><td colspan="7" class="table-empty">No hay tickets que coincidan con estos filtros.</td></tr>`}</tbody></table></div>`}</section>
     <div class="queue-strip"><div class="queue-chip"><span>Incidentes activos</span><strong>${openTickets().filter((ticket) => ticket.type === "Incidente").length}</strong></div><div class="queue-chip"><span>Solicitudes activas</span><strong>${openTickets().filter((ticket) => ticket.type === "Solicitud").length}</strong></div><div class="queue-chip"><span>Tickets en espera</span><strong>${openTickets().filter((ticket) => ticket.status === "En espera").length}</strong></div></div>`;
 }
 
@@ -962,6 +997,12 @@ function bindDetail(host, ticketId) {
 }
 
 document.body.addEventListener("click", (event) => {
+  const sortControl = event.target.closest("[data-sort-key]");
+  if (sortControl) {
+    cycleTicketSort(sortControl.dataset.sortKey);
+    render();
+    return;
+  }
   const viewButton = event.target.closest("[data-view]");
   if (viewButton) {
     state.view = viewButton.dataset.view;
@@ -1046,7 +1087,7 @@ document.body.addEventListener("input", (event) => {
       return;
     }
     const content = appContent.querySelector(".ticket-table-wrap");
-    const nextRows = sortedTickets(state.tickets.filter((ticket) => {
+    const nextRows = sortTicketRows(state.tickets.filter((ticket) => {
       const selectedType = state.view === "incidents" ? "Incidente" : state.view === "requests" ? "Solicitud" : state.typeFilter;
       return (selectedType === "Todos" || ticket.type === selectedType) && (state.statusFilter === "Todos los estados" || ticket.status === state.statusFilter) && (state.priorityFilter === "Todas las prioridades" || ticket.priority === state.priorityFilter);
     }).filter((ticket) => {
