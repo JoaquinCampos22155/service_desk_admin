@@ -122,6 +122,7 @@ git commit -m "feat: add shared service desk schema and RLS"
 **Files:**
 - Create: `public/service-desk-data.js`
 - Create: `tests/service-desk-data.test.js`
+- Modify: `src/main.js`
 - Modify: `public/app.js`
 
 **Interfaces:**
@@ -141,7 +142,7 @@ Expected: FAIL because the adapter module does not exist.
 
 - [ ] **Step 3: Implement the adapter**
 
-Implement the listed methods against the `tickets` and `custom_categories` tables. Convert Supabase snake_case fields to the current camelCase ticket/category shape. On update, filter by both ticket `id` and prior `updated_at`; if no row is returned, throw `TicketConflictError`. Never write to `localStorage` or treat a failed request as success.
+Implement the listed methods against the `tickets` and `custom_categories` tables. Convert Supabase snake_case fields to the current camelCase ticket/category shape. On update, filter by both ticket `id` and prior `updated_at`; if no row is returned, throw `TicketConflictError`. Never write to `localStorage` or treat a failed request as success. Load this adapter before the application script from `src/main.js`.
 
 - [ ] **Step 4: Run adapter tests**
 

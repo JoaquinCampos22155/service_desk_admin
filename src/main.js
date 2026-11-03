@@ -14,6 +14,7 @@ function loadClassicScript(source) {
 
 try {
   window.bevstackSupabase = createSupabaseClient(import.meta.env, createClient);
+  await loadClassicScript(`${import.meta.env.BASE_URL}service-desk-data.js`);
   await loadClassicScript(`${import.meta.env.BASE_URL}app.js`);
 } catch (error) {
   const host = document.querySelector("#app-content");
