@@ -7,7 +7,7 @@ const vm = require("node:vm");
 function loadApp(storage = { getItem: () => null, setItem() {} }) {
   const appPath = path.join(__dirname, "..", "public", "app.js");
   let source = fs.readFileSync(appPath, "utf8");
-  source = source.replace(/\ndocument\.querySelector\("#today-label"\)\.textContent = [\s\S]*?;\s*render\(\);\s*$/, "");
+  source = source.replace(/\ndocument\.querySelector\("#today-label"\)\.textContent = [\s\S]*$/, "");
   source += `
     globalThis.__testApi = {
       state,

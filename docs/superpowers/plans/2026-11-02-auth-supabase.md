@@ -161,6 +161,7 @@ git commit -m "feat: add Supabase repositories for tickets and categories"
 **Files:**
 - Create: `public/service-desk-auth.js`
 - Create: `tests/service-desk-auth.test.js`
+- Modify: `src/main.js`
 - Modify: `index.html`
 - Modify: `public/app.js`
 - Modify: `styles.css`
@@ -181,7 +182,7 @@ Expected: FAIL because the auth adapter and guarded view are absent.
 
 - [ ] **Step 3: Implement auth adapter and UI**
 
-Implement the listed methods with Supabase Auth. Add accessible Spanish login, reset-request and password-update screens, session restoration, auth-state handling, protected app initialization and logout. Configure the reset redirect from the current origin and provide clear success/error messages. Keep account creation disabled in the UI.
+Implement the listed methods with Supabase Auth. Load the auth adapter before the app. Add accessible Spanish login, reset-request and password-update screens, session restoration, auth-state handling, protected app initialization and logout. Configure the reset redirect from the current origin and provide clear success/error messages. Keep account creation disabled in the UI.
 
 - [ ] **Step 4: Run auth tests**
 

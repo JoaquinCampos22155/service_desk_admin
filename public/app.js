@@ -80,8 +80,9 @@ const state = {
   ticketSort: null,
   selectedTicketId: null,
   pendingStatusChange: null,
-  tickets: loadTickets(),
+  tickets: typeof ServiceDeskAuth === "undefined" ? loadTickets() : [],
   problemRecords: loadProblemRecords(),
+  authSession: null,
 };
 
 const appContent = document.querySelector("#app-content");
@@ -997,6 +998,14 @@ function bindDetail(host, ticketId) {
 }
 
 document.body.addEventListener("click", (event) => {
+  const authAction = event.target.closest("[data-auth-action]")?.dataset.authAction;
+  if (authAction === "forgot-password") { renderAuthScreen("reset"); return; }
+  if (authAction === "back-to-login") { renderAuthScreen("login"); return; }
+  if (authAction === "open-service-desk") { activateServiceDesk(state.authSession); return; }
+  if (event.target.closest('[data-action="sign-out"]')) {
+    ServiceDeskAuth.signOut().catch((error) => showToast(error.message, "error"));
+    return;
+  }
   const sortControl = event.target.closest("[data-sort-key]");
   if (sortControl) {
     cycleTicketSort(sortControl.dataset.sortKey);
@@ -1035,6 +1044,60 @@ document.body.addEventListener("click", (event) => {
   const typeTab = event.target.closest("[data-type-filter]");
   if (typeTab) {
     selectQueueView(typeTab.dataset.typeFilter);
+  }
+});
+
+function renderAuthScreen(mode = "login", message = "", isError = false) {
+  const host = document.querySelector("#auth-shell");
+  const shell = document.querySelector(".app-shell");
+  if (!host || !shell) return;
+  shell.hidden = true;
+  host.hidden = false;
+  const login = mode === "login";
+  const reset = mode === "reset";
+  const title = login ? "Inicia sesión" : reset ? "Recupera tu acceso" : "Actualiza tu contraseña";
+  const description = login ? "Acceso para el equipo de operación de Bevstack." : reset ? "Te enviaremos un enlace al correo de tu cuenta." : "Define una nueva contraseña para continuar.";
+  const form = login ? `<form id="auth-login-form" class="auth-form"><label>Correo del equipo<input type="email" name="email" autocomplete="username" required /></label><label>Contraseña<input type="password" name="password" autocomplete="current-password" required /></label><button class="primary-button" type="submit">Iniciar sesión</button><button class="auth-text-button" type="button" data-auth-action="forgot-password">Olvidé mi contraseña</button></form>`
+    : reset ? `<form id="auth-reset-form" class="auth-form"><label>Correo del equipo<input type="email" name="email" autocomplete="email" required /></label><button class="primary-button" type="submit">Enviar enlace de recuperación</button><button class="auth-text-button" type="button" data-auth-action="back-to-login">Volver al inicio de sesión</button></form>`
+      : `<form id="auth-update-form" class="auth-form"><label>Nueva contraseña<input type="password" name="password" autocomplete="new-password" minlength="8" required /></label><label>Confirma la contraseña<input type="password" name="confirmPassword" autocomplete="new-password" minlength="8" required /></label><button class="primary-button" type="submit">Guardar contraseña</button><button class="auth-text-button" type="button" data-auth-action="open-service-desk">Continuar al Service Desk</button></form>`;
+  host.innerHTML = `<section class="auth-card" aria-labelledby="auth-title"><div class="auth-brand"><span class="auth-brand-mark">b</span><span><strong>bevstack</strong><small>SERVICE DESK</small></span></div><div class="auth-copy"><h1 id="auth-title">${title}</h1><p>${description}</p></div>${message ? `<p class="auth-message ${isError ? "error" : "success"}" role="status">${escapeHTML(message)}</p>` : ""}${form}<p class="auth-invite-note">Las cuentas son creadas por la administración del equipo.</p></section>`;
+}
+
+function activateServiceDesk(session) {
+  if (!session) { renderAuthScreen("login", "Inicia sesión para continuar.", true); return; }
+  const sameSession = state.authSession?.access_token === session.access_token;
+  state.authSession = session;
+  const authShell = document.querySelector("#auth-shell");
+  const shell = document.querySelector(".app-shell");
+  if (authShell) authShell.hidden = true;
+  if (shell) shell.hidden = false;
+  const email = document.querySelector("#profile-email");
+  if (email) email.textContent = session.user?.email || "Cuenta del equipo";
+  if (!sameSession) render();
+}
+
+document.body.addEventListener("submit", async (event) => {
+  const form = event.target;
+  if (!form.matches?.("#auth-login-form, #auth-reset-form, #auth-update-form")) return;
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(form).entries());
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = true;
+  try {
+    if (form.id === "auth-login-form") {
+      const session = await ServiceDeskAuth.signIn(values.email, values.password);
+      activateServiceDesk(session);
+    } else if (form.id === "auth-reset-form") {
+      await ServiceDeskAuth.sendPasswordReset(values.email);
+      renderAuthScreen("reset", "Si el correo está registrado, recibirás un enlace para restablecer la contraseña.");
+    } else {
+      if (values.password.length < 8) throw new Error("La contraseña debe tener al menos 8 caracteres.");
+      if (values.password !== values.confirmPassword) throw new Error("Las contraseñas no coinciden.");
+      await ServiceDeskAuth.updatePassword(values.password);
+      renderAuthScreen("update", "Contraseña actualizada. Ya puedes continuar al Service Desk.");
+    }
+  } catch (error) {
+    renderAuthScreen(form.id === "auth-login-form" ? "login" : form.id === "auth-reset-form" ? "reset" : "update", error.message, true);
   }
 });
 
@@ -1124,4 +1187,16 @@ document.body.addEventListener("keydown", (event) => {
 });
 
 document.querySelector("#today-label").textContent = new Intl.DateTimeFormat("es-GT", { weekday: "short", day: "numeric", month: "short" }).format(new Date());
-render();
+if (typeof ServiceDeskAuth === "undefined") {
+  render();
+} else {
+  ServiceDeskAuth.start({
+    onSession: (session, event) => {
+      if (event === "PASSWORD_RECOVERY" && session) {
+        state.authSession = session;
+        renderAuthScreen("update");
+      } else if (session) activateServiceDesk(session);
+      else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") renderAuthScreen("login");
+    },
+  }).catch((error) => renderAuthScreen("login", error.message, true));
+}

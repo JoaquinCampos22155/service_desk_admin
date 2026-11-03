@@ -12,7 +12,8 @@
     <script type="module" src="/src/main.js"></script>
   </head>
   <body>
-    <div class="app-shell">
+    <main id="auth-shell" class="auth-shell" hidden></main>
+    <div class="app-shell" hidden>
       <aside class="sidebar">
         <a class="brand" href="#dashboard" aria-label="Bevstack Service Desk inicio">
           <span class="brand-mark">b</span>
@@ -39,7 +40,7 @@
 
         <div class="sidebar-bottom">
           <div class="support-card"><span class="support-orb">✦</span><strong>Un equipo, un punto de contacto</strong><p>Account Management y Customer Service mantienen a cada usuario informado.</p></div>
-          <div class="profile"><span class="profile-avatar">AM</span><span><strong>Agente de soporte</strong><small>Nivel 1 · En línea</small></span><button class="more-button" aria-label="Más opciones">···</button></div>
+          <div class="profile"><span class="profile-avatar">AM</span><span><strong>Agente de soporte</strong><small id="profile-email"></small></span><button class="more-button" data-action="sign-out" aria-label="Cerrar sesión">Salir</button></div>
         </div>
       </aside>
 
