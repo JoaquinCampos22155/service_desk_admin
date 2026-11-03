@@ -4,23 +4,25 @@ Demo web de una mesa de servicio virtual para Bevstack, enfocada en la atención
 
 ## Ejecutar localmente
 
-La demo es una página estática: no necesita instalar dependencias, configurar una base de datos ni tener Vite/React. Solo necesitas Python 3 para levantar el servidor local y un navegador moderno.
+Necesitas Node.js 20 o posterior y pnpm.
 
-1. Clona o descarga el repositorio y abre una terminal en la carpeta del proyecto, donde está `index.html`.
-2. En Windows, abre PowerShell desde esa carpeta y ejecuta:
+1. Instala las dependencias desde la raíz del proyecto:
 
 ```powershell
-py -m http.server 8000
+pnpm install
 ```
 
-Si el comando `py` no está disponible, prueba `python -m http.server 8000`.
+2. Copia `.env.example` a `.env.local` y completa la URL y publishable key del proyecto Supabase. No uses una clave `service_role` en el navegador.
+3. Inicia el servidor de desarrollo:
 
-3. Mientras la terminal siga abierta, visita [http://localhost:8000](http://localhost:8000) en el navegador. Si el navegador muestra un listado de archivos, verifica que la terminal esté ubicada en la raíz del proyecto y abre la dirección otra vez.
-4. Para detener el servidor, vuelve a la terminal y presiona `Ctrl+C`.
+```powershell
+pnpm dev
+```
 
-Si el puerto 8000 ya está ocupado, inicia el servidor con otro puerto —por ejemplo, `py -m http.server 8080`— y visita `http://localhost:8080`.
+4. Abre la dirección que muestra Vite, normalmente [http://localhost:5173](http://localhost:5173).
+5. Detén el servidor con `Ctrl+C`.
 
-Los tickets de demostración y las modificaciones se guardan en el almacenamiento local del navegador. Por eso, los cambios solo aparecen en ese navegador y equipo; no se comparten con los demás integrantes ni se conservan como datos de producción.
+La configuración local vive en `.env.local`, que Git ignora. Las variables `VITE_` se incluyen en el JavaScript del navegador; usa solo la publishable key y configura RLS antes de habilitar usuarios.
 
 ## Pruebas
 

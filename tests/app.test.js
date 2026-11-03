@@ -5,7 +5,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 function loadApp(storage = { getItem: () => null, setItem() {} }) {
-  const appPath = path.join(__dirname, "..", "app.js");
+  const appPath = path.join(__dirname, "..", "public", "app.js");
   let source = fs.readFileSync(appPath, "utf8");
   source = source.replace(/\ndocument\.querySelector\("#today-label"\)\.textContent = [\s\S]*?;\s*render\(\);\s*$/, "");
   source += `
@@ -648,7 +648,7 @@ test("uses the navy, black, white, and cyan brand palette without emoji presenta
   const root = path.join(__dirname, "..");
   const css = fs.readFileSync(path.join(root, "styles.css"), "utf8");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
-  const interfaceSource = ["app.js", "index.html", "styles.css"].map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+  const interfaceSource = ["public/app.js", "index.html", "styles.css"].map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
   assert.match(css, /--brand-navy:\s*#[0-9a-f]{6}/i);
   assert.match(css, /--brand-black:\s*#[0-9a-f]{6}/i);
   assert.match(css, /--brand-cyan:\s*#[0-9a-f]{6}/i);
