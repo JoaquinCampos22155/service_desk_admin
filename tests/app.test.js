@@ -22,6 +22,12 @@ function loadApp(storage = { getItem: () => null, setItem() {} }) {
       heatLevel: typeof heatLevel === "function" ? heatLevel : null,
       priorityHeatColor: typeof priorityHeatColor === "function" ? priorityHeatColor : null,
       selectQueueView: typeof selectQueueView === "function" ? selectQueueView : null,
+      statuses: STATUSES,
+      renderKanbanBoard: typeof renderKanbanBoard === "function" ? renderKanbanBoard : null,
+      stageStatusChange: typeof stageStatusChange === "function" ? stageStatusChange : null,
+      confirmStatusChange: typeof confirmStatusChange === "function" ? confirmStatusChange : null,
+      cancelStatusChange: typeof cancelStatusChange === "function" ? cancelStatusChange : null,
+      statusChangeDialogMarkup: typeof statusChangeDialogMarkup === "function" ? statusChangeDialogMarkup : null,
       createFormMarkup: typeof createFormMarkup === "function" ? createFormMarkup : null,
       seedTickets: typeof seedTickets === "function" ? seedTickets : null,
       refreshStaleDemoDates: typeof refreshStaleDemoDates === "function" ? refreshStaleDemoDates : null,
@@ -198,6 +204,85 @@ test("filters the support queue by selected priority", () => {
   const html = api.renderTicketQueue();
   assert.match(html, /BV-P1/);
   assert.doesNotMatch(html, /BV-P3/);
+});
+
+test("removes triage as a ticket state and migrates saved tickets into progress", () => {
+  const stored = new Map([[
+    "bevstack-service-desk-v1",
+    JSON.stringify([{ id: "BV-OLD", type: "Incidente", categoryId: "payment-without-order", status: "En triage", createdAt: "2026-11-02T12:00:00Z" }]),
+  ]]);
+  const api = loadApp({ getItem: (key) => stored.get(key) || null, setItem: (key, value) => stored.set(key, value) });
+
+  assert.equal(api.state.tickets[0].status, "En progreso");
+  assert.equal(JSON.parse(stored.get("bevstack-service-desk-v1"))[0].status, "En progreso");
+  assert.equal(api.statuses.includes("En triage"), false);
+  assert.equal(api.seedTickets().some((ticket) => ticket.status === "En triage"), false);
+});
+
+test("incident and request pages render status columns while all tickets stays a table", () => {
+  const api = loadApp();
+  api.state.tickets = [
+    { id: "BV-I1", subject: "Incidente de pago", categoryId: "payment-without-order", type: "Incidente", priority: "P1", status: "Nuevo", brand: "Marca A", channel: "Portal de marca", createdAt: "2026-11-02T12:00:00Z" },
+    { id: "BV-R1", subject: "Solicitud de envío", categoryId: "shipping-rules", type: "Solicitud", priority: "P2", status: "En progreso", brand: "Marca B", channel: "Portal de marca", createdAt: "2026-11-02T12:00:00Z" },
+  ];
+  api.state.view = "incidents";
+  const incidents = api.renderTicketQueue();
+  assert.match(incidents, /class="kanban-board"/);
+  assert.match(incidents, /data-status-column="Nuevo"/);
+  assert.match(incidents, /data-ticket-card="BV-I1"/);
+  assert.match(incidents, /draggable="true"/);
+  assert.doesNotMatch(incidents, /id="status-filter"/);
+  assert.doesNotMatch(incidents, /data-ticket-card="BV-R1"/);
+  assert.doesNotMatch(incidents, /<table class="ticket-table"/);
+
+  api.state.view = "requests";
+  const requests = api.renderTicketQueue();
+  assert.match(requests, /data-ticket-card="BV-R1"/);
+  assert.doesNotMatch(requests, /data-ticket-card="BV-I1"/);
+
+  api.state.view = "tickets";
+  const all = api.renderTicketQueue();
+  assert.match(all, /<table class="ticket-table"/);
+  assert.doesNotMatch(all, /class="kanban-board"/);
+});
+
+test("status changes stay pending until confirmed and cancellation preserves the ticket", () => {
+  const stored = new Map();
+  const api = loadApp({ getItem: (key) => stored.get(key) || null, setItem: (key, value) => stored.set(key, value) });
+  api.state.tickets = [{ id: "BV-MOVE", type: "Incidente", status: "Nuevo", resolvedAt: null, reopenedCount: 0, updatedAt: "2026-11-02T12:00:00Z" }];
+
+  assert.equal(api.stageStatusChange("BV-MOVE", "En progreso"), true);
+  assert.equal(api.state.tickets[0].status, "Nuevo");
+  assert.equal(api.cancelStatusChange(), true);
+  assert.equal(api.state.tickets[0].status, "Nuevo");
+
+  api.stageStatusChange("BV-MOVE", "Resuelto");
+  const changed = api.confirmStatusChange();
+  assert.equal(changed.status, "Resuelto");
+  assert.ok(changed.resolvedAt);
+  assert.equal(JSON.parse(stored.get("bevstack-service-desk-v1"))[0].status, "Resuelto");
+});
+
+test("moving a resolved or closed ticket back to work records a reopening", () => {
+  const api = loadApp();
+  api.state.tickets = [{ id: "BV-REOPEN", type: "Incidente", status: "Cerrado", resolvedAt: "2026-11-01T12:00:00Z", reopenedCount: 1 }];
+
+  assert.equal(api.stageStatusChange("BV-REOPEN", "En progreso"), true);
+  const changed = api.confirmStatusChange();
+  assert.equal(changed.status, "En progreso");
+  assert.equal(changed.resolvedAt, null);
+  assert.equal(changed.reopenedCount, 2);
+});
+
+test("status confirmation explains the current and destination state with explicit actions", () => {
+  const api = loadApp();
+  api.state.tickets = [{ id: "BV-CONFIRM", type: "Incidente", status: "En progreso" }];
+  const markup = api.statusChangeDialogMarkup("BV-CONFIRM", "En espera");
+  assert.match(markup, /Confirmar cambio de estado/);
+  assert.match(markup, /En progreso/);
+  assert.match(markup, /En espera/);
+  assert.match(markup, /data-action="confirm-status-change"/);
+  assert.match(markup, /data-action="cancel-status-change"/);
 });
 
 test("queue tabs navigate to their full service page and clear stale filters", () => {

@@ -3,7 +3,7 @@
 const STORAGE_KEY = "bevstack-service-desk-v1";
 const PROBLEM_STORAGE_KEY = "bevstack-service-desk-problems-v1";
 const CATALOG_STORAGE_KEY = "bevstack-service-desk-catalog-v1";
-const STATUSES = ["Nuevo", "En triage", "En progreso", "En espera", "Escalado", "Resuelto", "Cerrado"];
+const STATUSES = ["Nuevo", "En progreso", "En espera", "Escalado", "Resuelto", "Cerrado"];
 const ASSIGNEES = ["Account Management", "Customer Service", "Team de Tech", "Directora de Tech", "Proveedor externo"];
 const PRIORITY_RULES = {
   Alto: { Alta: "P1", Media: "P1", Baja: "P2" },
@@ -78,6 +78,7 @@ const state = {
   statusFilter: "Todos los estados",
   priorityFilter: "Todas las prioridades",
   selectedTicketId: null,
+  pendingStatusChange: null,
   tickets: loadTickets(),
   problemRecords: loadProblemRecords(),
 };
@@ -93,7 +94,7 @@ function seedTickets() {
   const seed = [
     ["BV-1048", "Pago confirmado, pero el pedido no aparece", "payment-without-order", "Incidente", "Alto", "Alta", "En progreso", "Customer Service", "Portal de marca", "Nébula Spirits", "ORD-78421", 35, "El cliente recibió confirmación del cobro. La orden no aparece en el panel de operaciones y hay tres consumidores afectados.", ["Validamos el cobro y estamos revisando la sincronización de órdenes."]],
     ["BV-1047", "La tienda no procesa pedidos desde esta mañana", "unprocessed-order", "Incidente", "Alto", "Alta", "Escalado", "Team de Tech", "Portal de marca", "Casa Nómada", "", 95, "El flujo de compra falla para varias marcas; el problema empezó después de una actualización del proveedor.", ["AM registró el caso y notificó a Tech. Se abrió seguimiento con el proveedor."]],
-    ["BV-1046", "Agregar cobertura de envío para zona 12", "shipping-rules", "Solicitud", "Medio", "Baja", "En triage", "Account Management", "Portal de marca", "Altura Gin", "", 480, "Solicitamos habilitar la zona 12 a partir del próximo lunes. Las tarifas existentes se mantienen.", ["Recibimos la solicitud. Validaremos la cobertura y la fecha solicitada."]],
+    ["BV-1046", "Agregar cobertura de envío para zona 12", "shipping-rules", "Solicitud", "Medio", "Baja", "En progreso", "Account Management", "Portal de marca", "Altura Gin", "", 480, "Solicitamos habilitar la zona 12 a partir del próximo lunes. Las tarifas existentes se mantienen.", ["Recibimos la solicitud. Validaremos la cobertura y la fecha solicitada."]],
     ["BV-1045", "Disponibilidad de producto no coincide con inventario", "incorrect-inventory", "Incidente", "Medio", "Alta", "En espera", "Team de Tech", "Correo de Customer Service", "Nébula Spirits", "ORD-78396", 1460, "El producto aparece disponible en la tienda, pero el retailer reporta inventario agotado.", ["CS confirmó la discrepancia. Estamos esperando la confirmación del feed de inventario."]],
     ["BV-1044", "Preparar una nueva tienda para el lanzamiento", "new-store", "Solicitud", "Bajo", "Baja", "En progreso", "Account Management", "Portal de marca", "Fuego Norte", "", 2920, "Activar la tienda de Fuego Norte antes de la campaña del próximo mes. Credenciales entregadas.", ["Checklist de onboarding iniciado; faltan validar reglas de envío."]],
     ["BV-1043", "No aparece el envío express en el checkout", "shipping-unavailable", "Incidente", "Medio", "Alta", "Nuevo", "Customer Service", "Correo de Customer Service", "Casa Nómada", "ORD-78122", 4335, "Una persona consumidora no puede elegir envío express aunque el destino está dentro de cobertura.", []],
@@ -112,7 +113,8 @@ function loadTickets() {
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        const refreshed = refreshStaleDemoDates(parsed);
+        const migrated = migrateLegacyTicketStatuses(parsed);
+        const refreshed = refreshStaleDemoDates(migrated);
         if (refreshed !== parsed) localStorage.setItem(STORAGE_KEY, JSON.stringify(refreshed));
         return refreshed;
       }
@@ -123,6 +125,16 @@ function loadTickets() {
   const seeded = seedTickets();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
   return seeded;
+}
+
+function migrateLegacyTicketStatuses(tickets) {
+  let changed = false;
+  const migrated = tickets.map((ticket) => {
+    if (ticket.status !== "En triage") return ticket;
+    changed = true;
+    return { ...ticket, status: "En progreso" };
+  });
+  return changed ? migrated : tickets;
 }
 
 function refreshStaleDemoDates(tickets, now = new Date()) {
@@ -211,7 +223,7 @@ function calculatePriority(impact, urgency) {
 }
 
 function statusClass(status) {
-  return ({ "Nuevo": "new", "En triage": "triage", "En progreso": "progress", "En espera": "waiting", "Escalado": "triage", "Resuelto": "resolved", "Cerrado": "closed" })[status] || "";
+  return ({ "Nuevo": "new", "En progreso": "progress", "En espera": "waiting", "Escalado": "escalated", "Resuelto": "resolved", "Cerrado": "closed" })[status] || "";
 }
 
 function priorityPill(priority) {
@@ -520,7 +532,8 @@ function metricCard(label, value, foot, icon, color) {
 
 function renderTicketQueue() {
   const selectedType = state.view === "incidents" ? "Incidente" : state.view === "requests" ? "Solicitud" : state.typeFilter;
-  const base = state.tickets.filter((ticket) => (selectedType === "Todos" || ticket.type === selectedType) && (state.statusFilter === "Todos los estados" || ticket.status === state.statusFilter) && (state.priorityFilter === "Todas las prioridades" || ticket.priority === state.priorityFilter));
+  const isBoard = ["incidents", "requests"].includes(state.view);
+  const base = state.tickets.filter((ticket) => (selectedType === "Todos" || ticket.type === selectedType) && (isBoard || state.statusFilter === "Todos los estados" || ticket.status === state.statusFilter) && (state.priorityFilter === "Todas las prioridades" || ticket.priority === state.priorityFilter));
   const filtered = sortedTickets(base.filter((ticket) => {
     const needle = state.search.trim().toLocaleLowerCase("es");
     const category = categoryById(ticket.categoryId).name;
@@ -536,15 +549,69 @@ function renderTicketQueue() {
   };
   return `<div class="page-heading"><div><h1>${pageTitle}</h1><p class="page-subtitle">${subtitle}</p></div><button class="primary-button create-ticket-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
     ${state.view === "tickets" ? `<section class="status-overview" aria-label="Estado de todos los tickets"><div class="status-overview-heading"><h2>Estado de todos los tickets</h2><span>Conteos globales · no cambian con los filtros</span></div><div class="status-overview-grid"><div class="status-total active"><span>Activos</span><strong>${statusCounts.active}</strong></div><div class="status-total resolved"><span>Resueltos</span><strong>${statusCounts.resolved}</strong></div><div class="status-total closed"><span>Cerrados</span><strong>${statusCounts.closed}</strong></div></div><p class="status-definitions"><span><strong>Resuelto</strong> significa solución aplicada, pendiente de confirmación o cierre.</span><span><strong>Cerrado</strong> significa caso validado y finalizado.</span></p></section>` : ""}
-    <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>Registro de casos</h2><p>Ordenado por prioridad; P1 aparece antes que P2 y P3.</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select><select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select></div></div>
+    <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>${isBoard ? "Tablero de trabajo" : "Registro de casos"}</h2><p>${isBoard ? "Arrastra una tarjeta a otra columna para cambiar su estado; confirmarás el movimiento antes de guardarlo." : "Ordenado por prioridad; P1 aparece antes que P2 y P3."}</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select>${isBoard ? "" : `<select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select>`}</div></div>
     <div class="queue-tabs" role="tablist"><button class="queue-tab ${selectedType === "Todos" ? "active" : ""}" data-type-filter="Todos">Todos<span>${counts.all}</span></button><button class="queue-tab ${selectedType === "Incidente" ? "active" : ""}" data-type-filter="Incidente">Incidentes<span>${counts.incidents}</span></button><button class="queue-tab ${selectedType === "Solicitud" ? "active" : ""}" data-type-filter="Solicitud">Solicitudes<span>${counts.requests}</span></button></div>
-    <div class="ticket-table-wrap"><table class="ticket-table"><thead><tr><th>Ticket</th><th>Tipo / categoría</th><th>Marca y canal</th><th>Prioridad</th><th>Estado</th><th>Responsable</th><th>Creado</th></tr></thead><tbody>${filtered.length ? filtered.map(ticketRow).join("") : `<tr><td colspan="7" class="table-empty">No hay tickets que coincidan con estos filtros.</td></tr>`}</tbody></table></div></section>
+    ${isBoard ? renderKanbanBoard(filtered) : `<div class="ticket-table-wrap"><table class="ticket-table"><thead><tr><th>Ticket</th><th>Tipo / categoría</th><th>Marca y canal</th><th>Prioridad</th><th>Estado</th><th>Responsable</th><th>Creado</th></tr></thead><tbody>${filtered.length ? filtered.map(ticketRow).join("") : `<tr><td colspan="7" class="table-empty">No hay tickets que coincidan con estos filtros.</td></tr>`}</tbody></table></div>`}</section>
     <div class="queue-strip"><div class="queue-chip"><span>Incidentes activos</span><strong>${openTickets().filter((ticket) => ticket.type === "Incidente").length}</strong></div><div class="queue-chip"><span>Solicitudes activas</span><strong>${openTickets().filter((ticket) => ticket.type === "Solicitud").length}</strong></div><div class="queue-chip"><span>Tickets en espera</span><strong>${openTickets().filter((ticket) => ticket.status === "En espera").length}</strong></div></div>`;
 }
 
 function ticketRow(ticket) {
   const category = categoryById(ticket.categoryId);
   return `<tr data-ticket-id="${escapeHTML(ticket.id)}"><td><span class="ticket-number">${escapeHTML(ticket.id)}</span><div class="ticket-subject"><strong>${escapeHTML(ticket.subject)}</strong><small>${ticket.orderId ? `Pedido ${escapeHTML(ticket.orderId)}` : `${escapeHTML(ticket.requesterName)} · ${escapeHTML(ticket.requesterType)}`}</small></div></td><td>${typePill(ticket.type)}<div class="ticket-id">${escapeHTML(category.name)}</div></td><td><strong>${escapeHTML(ticket.brand)}</strong><div class="ticket-id">${escapeHTML(ticket.channel)}</div></td><td>${priorityPill(ticket.priority)}</td><td>${statusPill(ticket.status)}</td><td>${escapeHTML(ticket.assignee)}</td><td>${formatDate(ticket.createdAt)}</td></tr>`;
+}
+
+function renderKanbanBoard(tickets) {
+  return `<div class="kanban-board" aria-label="Tablero de tickets por estado">${STATUSES.map((status) => {
+    const columnTickets = sortedTickets(tickets.filter((ticket) => ticket.status === status));
+    return `<section class="kanban-column status-${statusClass(status)}" data-status-column="${escapeHTML(status)}" aria-label="Estado ${escapeHTML(status)}"><header class="kanban-column-head"><h3>${escapeHTML(status)}</h3><span>${columnTickets.length}</span></header><div class="kanban-column-body" data-status-drop="${escapeHTML(status)}" aria-label="Soltar tickets en ${escapeHTML(status)}">${columnTickets.length ? columnTickets.map(kanbanCard).join("") : `<p class="kanban-empty">Suelta aquí un ticket</p>`}</div></section>`;
+  }).join("")}</div>`;
+}
+
+function kanbanCard(ticket) {
+  const category = categoryById(ticket.categoryId);
+  return `<article class="kanban-card" draggable="true" tabindex="0" data-ticket-card="${escapeHTML(ticket.id)}" data-ticket-id="${escapeHTML(ticket.id)}" aria-label="${escapeHTML(ticket.id)} · ${escapeHTML(ticket.subject)} · ${escapeHTML(ticket.status)}"><div class="kanban-card-meta"><span class="ticket-number">${escapeHTML(ticket.id)}</span>${priorityPill(ticket.priority)}</div><h4>${escapeHTML(ticket.subject)}</h4><p>${escapeHTML(ticket.brand)} · ${escapeHTML(category.name)}</p><div class="kanban-card-footer"><span>${escapeHTML(ticket.assignee || "Sin asignar")}</span><button type="button" class="kanban-change-button" data-action="choose-card-status" data-ticket-id="${escapeHTML(ticket.id)}">Cambiar estado</button></div></article>`;
+}
+
+function stageStatusChange(ticketId, nextStatus, updates = {}) {
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (!ticket || !STATUSES.includes(nextStatus) || ticket.status === nextStatus) return false;
+  state.pendingStatusChange = { ticketId, nextStatus, updates };
+  return true;
+}
+
+function cancelStatusChange() {
+  if (!state.pendingStatusChange) return false;
+  state.pendingStatusChange = null;
+  return true;
+}
+
+function confirmStatusChange() {
+  const pending = state.pendingStatusChange;
+  state.pendingStatusChange = null;
+  if (!pending) return null;
+  const ticket = state.tickets.find((item) => item.id === pending.ticketId);
+  if (!ticket || !STATUSES.includes(pending.nextStatus) || ticket.status === pending.nextStatus) return null;
+  const previousStatus = ticket.status;
+  const previousPriority = ticket.priority;
+  const now = new Date().toISOString();
+  Object.assign(ticket, pending.updates || {});
+  ticket.status = pending.nextStatus;
+  if (["Resuelto", "Cerrado"].includes(pending.nextStatus) && !ticket.resolvedAt) ticket.resolvedAt = now;
+  if (["Resuelto", "Cerrado"].includes(previousStatus) && !["Resuelto", "Cerrado"].includes(pending.nextStatus)) {
+    ticket.resolvedAt = null;
+    ticket.reopenedCount = (ticket.reopenedCount || 0) + 1;
+  }
+  ticket.updatedAt = now;
+  if (ticket.priority !== previousPriority) ticket.priorityChangedAt = now;
+  persist();
+  return ticket;
+}
+
+function statusChangeDialogMarkup(ticketId, nextStatus) {
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (!ticket || !STATUSES.includes(nextStatus) || ticket.status === nextStatus) return "";
+  const body = `<p class="status-confirm-copy">¿Confirmas mover <strong>${escapeHTML(ticket.id)} · ${escapeHTML(ticket.subject)}</strong> de <span class="status-pill ${statusClass(ticket.status)}">${escapeHTML(ticket.status)}</span> a <span class="status-pill ${statusClass(nextStatus)}">${escapeHTML(nextStatus)}</span>?</p><p class="form-help">El cambio se guardará en el Service Desk.</p>`;
+  return dialogMarkup("Confirmar cambio de estado", "Verifica el movimiento antes de guardarlo.", body, `<button class="secondary-button" data-action="cancel-status-change">Cancelar</button><button class="primary-button" data-action="confirm-status-change">Confirmar cambio</button>`);
 }
 
 function renderCatalog() {
@@ -791,7 +858,32 @@ function nextTicketId() {
 }
 
 function closeModal() {
+  cancelStatusChange();
   document.querySelector("#modal-host")?.remove();
+}
+
+function openCardStatusPicker(ticketId) {
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (!ticket) return;
+  const host = document.createElement("div");
+  host.id = "modal-host";
+  const body = `<form id="card-status-form"><div class="field"><label for="card-next-status">Nuevo estado</label><select id="card-next-status" name="status">${STATUSES.filter((status) => status !== ticket.status).map((status) => `<option>${escapeHTML(status)}</option>`).join("")}</select></div></form>`;
+  host.innerHTML = dialogMarkup(`Cambiar estado de ${ticket.id}`, ticket.subject, body, `<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" type="submit" form="card-status-form">Continuar</button>`);
+  document.body.append(host);
+  host.querySelector("#card-status-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nextStatus = new FormData(event.currentTarget).get("status");
+    closeModal();
+    openStatusConfirmation(ticketId, nextStatus);
+  });
+}
+
+function openStatusConfirmation(ticketId, nextStatus, updates = {}) {
+  if (!stageStatusChange(ticketId, nextStatus, updates)) return;
+  const host = document.createElement("div");
+  host.id = "modal-host";
+  host.innerHTML = statusChangeDialogMarkup(ticketId, nextStatus);
+  document.body.append(host);
 }
 
 function openTicket(ticketId) {
@@ -835,12 +927,15 @@ function bindDetail(host, ticketId) {
     const oldStatus = ticket.status;
     const oldPriority = ticket.priority;
     const values = Object.fromEntries(new FormData(editForm).entries());
-    Object.assign(ticket, values);
-    if (oldStatus !== "Resuelto" && values.status === "Resuelto") ticket.resolvedAt = new Date().toISOString();
-    if (["Resuelto", "Cerrado"].includes(oldStatus) && !["Resuelto", "Cerrado"].includes(values.status)) {
-      ticket.resolvedAt = null;
-      ticket.reopenedCount = (ticket.reopenedCount || 0) + 1;
+    const nextStatus = values.status;
+    delete values.status;
+    if (oldStatus !== nextStatus) {
+      closeModal();
+      render();
+      openStatusConfirmation(ticketId, nextStatus, values);
+      return;
     }
+    Object.assign(ticket, values);
     ticket.updatedAt = new Date().toISOString();
     if (ticket.priority !== oldPriority) ticket.priorityChangedAt = ticket.updatedAt;
     persist();
@@ -883,6 +978,15 @@ document.body.addEventListener("click", (event) => {
   if (action === "new-ticket") { openCreateDialog(); return; }
   if (action === "new-category") { openCategoryDialog(); return; }
   if (action === "analyze-problem") { openProblemDialog(event.target.closest("[data-category-id]").dataset.categoryId); return; }
+  if (action === "choose-card-status") { openCardStatusPicker(event.target.closest("[data-ticket-id]").dataset.ticketId); return; }
+  if (action === "cancel-status-change") { cancelStatusChange(); closeModal(); return; }
+  if (action === "confirm-status-change") {
+    const ticket = confirmStatusChange();
+    closeModal();
+    render();
+    if (ticket) showToast(`${ticket.id} pasó a ${ticket.status}.`);
+    return;
+  }
   if (action === "close-modal") { closeModal(); return; }
   if (action === "backdrop-close" && event.target.classList.contains("modal-backdrop")) { closeModal(); return; }
   const ticketNode = event.target.closest("[data-ticket-id]");
@@ -893,10 +997,54 @@ document.body.addEventListener("click", (event) => {
   }
 });
 
+document.body.addEventListener("dragstart", (event) => {
+  const card = event.target.closest("[data-ticket-card]");
+  if (!card) return;
+  if (event.dataTransfer) {
+    event.dataTransfer.setData("text/plain", card.dataset.ticketCard);
+    event.dataTransfer.effectAllowed = "move";
+  }
+  card.classList.add("dragging");
+});
+
+document.body.addEventListener("dragend", (event) => {
+  event.target.closest("[data-ticket-card]")?.classList.remove("dragging");
+  document.querySelectorAll(".kanban-column-body.drag-over").forEach((column) => column.classList.remove("drag-over"));
+});
+
+document.body.addEventListener("dragover", (event) => {
+  const column = event.target.closest("[data-status-drop]");
+  if (!column) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  column.classList.add("drag-over");
+});
+
+document.body.addEventListener("dragleave", (event) => {
+  const column = event.target.closest("[data-status-drop]");
+  if (column && !column.contains(event.relatedTarget)) column.classList.remove("drag-over");
+});
+
+document.body.addEventListener("drop", (event) => {
+  const column = event.target.closest("[data-status-drop]");
+  if (!column) return;
+  event.preventDefault();
+  column.classList.remove("drag-over");
+  const ticketId = event.dataTransfer?.getData("text/plain");
+  if (ticketId) openStatusConfirmation(ticketId, column.dataset.statusDrop);
+});
+
 document.body.addEventListener("input", (event) => {
   if (event.target.id === "ticket-search") {
     state.search = event.target.value;
     const cursor = event.target.selectionStart;
+    if (["incidents", "requests"].includes(state.view)) {
+      render();
+      const nextSearch = appContent.querySelector("#ticket-search");
+      nextSearch?.focus();
+      nextSearch?.setSelectionRange(cursor, cursor);
+      return;
+    }
     const content = appContent.querySelector(".ticket-table-wrap");
     const nextRows = sortedTickets(state.tickets.filter((ticket) => {
       const selectedType = state.view === "incidents" ? "Incidente" : state.view === "requests" ? "Solicitud" : state.typeFilter;
@@ -924,6 +1072,14 @@ document.body.addEventListener("change", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModal();
+});
+
+document.body.addEventListener("keydown", (event) => {
+  const card = event.target.closest("[data-ticket-card]");
+  if (card && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    openTicket(card.dataset.ticketCard);
+  }
 });
 
 document.querySelector("#today-label").textContent = new Intl.DateTimeFormat("es-GT", { weekday: "short", day: "numeric", month: "short" }).format(new Date());

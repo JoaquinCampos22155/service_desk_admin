@@ -222,6 +222,34 @@ h1 { margin-bottom: 7px; font: 700 clamp(23px, 3vw, 30px)/1.2 Manrope, sans-seri
 .ticket-table tbody tr { cursor: pointer; transition: background .12s; }
 .ticket-table tbody tr:hover { background: #fafcfb; }
 .ticket-table tbody tr:last-child td { border-bottom: 0; }
+.kanban-board { width: 100%; display: grid; grid-auto-columns: minmax(245px, 1fr); grid-auto-flow: column; align-items: start; gap: 12px; overflow-x: auto; padding: 13px; overscroll-behavior-x: contain; }
+.kanban-column { min-width: 0; overflow: hidden; border: 1px solid #dbe4ed; border-top: 3px solid #8ca7c0; border-radius: 9px; background: #f4f7fb; }
+.kanban-column.status-new { border-top-color: #4f86cb; }
+.kanban-column.status-progress { border-top-color: #32a8d1; }
+.kanban-column.status-waiting { border-top-color: #8a76ba; }
+.kanban-column.status-escalated { border-top-color: #d08b27; }
+.kanban-column.status-resolved { border-top-color: #31936e; }
+.kanban-column.status-closed { border-top-color: #738094; }
+.kanban-column-head { min-height: 42px; padding: 10px 11px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kanban-column-head h3 { margin: 0; color: var(--brand-navy); font: 700 11px Manrope, sans-serif; }
+.kanban-column-head > span { min-width: 22px; padding: 3px 6px; border-radius: 12px; background: #e5edf6; color: #4c6480; font-size: 9px; font-weight: 700; text-align: center; }
+.kanban-column-body { min-height: 170px; max-height: min(62vh, 690px); overflow-y: auto; padding: 0 8px 9px; display: grid; align-content: start; gap: 8px; border: 2px solid transparent; border-radius: 0 0 8px 8px; transition: background .12s, border-color .12s; }
+.kanban-column-body.drag-over { border-color: var(--brand-cyan); background: #eaf8fd; }
+.kanban-empty { margin: 0; padding: 18px 8px; border: 1px dashed #cdd8e4; border-radius: 7px; color: #8796a7; font-size: 9px; text-align: center; }
+.kanban-card { min-width: 0; padding: 10px; border: 1px solid #dbe3eb; border-radius: 8px; background: #fff; box-shadow: 0 2px 5px rgba(17, 42, 72, .045); cursor: grab; transition: box-shadow .12s, transform .12s, opacity .12s; }
+.kanban-card:hover { transform: translateY(-1px); box-shadow: 0 5px 13px rgba(17, 42, 72, .1); }
+.kanban-card:focus-visible { outline: 3px solid rgba(48, 138, 220, .28); }
+.kanban-card.dragging { opacity: .45; cursor: grabbing; }
+.kanban-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kanban-card h4 { margin: 9px 0 5px; color: #263b4f; font: 700 10px/1.45 Manrope, sans-serif; overflow-wrap: anywhere; }
+.kanban-card p { margin: 0; color: #718196; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
+.kanban-card-footer { margin-top: 9px; padding-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid #edf1f5; }
+.kanban-card-footer > span { min-width: 0; color: #738195; font-size: 8px; overflow-wrap: anywhere; }
+.kanban-change-button { flex: 0 0 auto; padding: 4px 6px; border: 1px solid #cddceb; border-radius: 5px; background: #f7fbff; color: #285a96; font-size: 8px; font-weight: 700; cursor: pointer; }
+.kanban-change-button:hover { background: #edf5fc; }
+.status-confirm-copy { margin: 0 0 10px; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.status-confirm-copy strong { color: var(--brand-navy); }
+.status-confirm-copy .status-pill { margin: 0 3px; vertical-align: middle; }
 .ticket-subject { min-width: 210px; max-width: 310px; }
 .ticket-subject strong { display: block; overflow: hidden; color: #2d433c; font-size: 10px; font-weight: 600; text-overflow: ellipsis; }
 .ticket-subject small { display: block; margin-top: 4px; color: #9aa5a1; font-size: 8px; }
@@ -234,8 +262,8 @@ h1 { margin-bottom: 7px; font: 700 clamp(23px, 3vw, 30px)/1.2 Manrope, sans-seri
 .type-pill.request { color: #946018; background: #fff5e4; }
 .status-pill { color: #566b63; background: #eff3f0; }
 .status-pill.new { color: #4b76ad; background: #edf4ff; }
-.status-pill.triage { color: #996517; background: #fff5e5; }
 .status-pill.progress { color: #245e9b; background: #e8f4ff; }
+.status-pill.escalated { color: #9a5100; background: #fff4db; }
 .status-pill.waiting { color: #7464a4; background: #f1effa; }
 .status-pill.resolved { color: #1e755f; background: #e9f7f1; }
 .status-pill.closed { color: #596579; background: #eef1f5; }
