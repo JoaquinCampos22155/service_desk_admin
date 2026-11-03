@@ -46,6 +46,7 @@
 .auth-message { margin: -7px 0 17px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.45; }
 .auth-message.success { color: #155c4a; background: #e8f7f1; }
 .auth-message.error { color: #963d3a; background: #fff0ee; }
+.auth-loading { padding: 13px; border: 1px solid #d9e7f0; border-radius: 8px; color: #3b5871; background: #f4faff; font-size: 12px; text-align: center; }
 .auth-invite-note { margin: 24px 0 0; padding-top: 15px; border-top: 1px solid #e8edf2; color: #7a8999; font-size: 10px; text-align: center; }
 
 * { box-sizing: border-box; }
@@ -66,6 +67,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .workspace-switcher strong, .profile strong { display: block; font-size: 11px; font-weight: 700; }
 .workspace-switcher small { display: block; margin-top: 4px; color: #9eb0c7; font-size: 10px; }
 .profile small { display: block; margin-top: 4px; color: #9eb0c7; font-size: 10px; }
+.profile > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
 .main-nav { display: grid; gap: 4px; margin-top: 10px; }
 .nav-item { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; border: 0; border-radius: 8px; background: transparent; color: #c0ccdc; text-align: left; font-size: 12px; cursor: pointer; transition: background .16s, color .16s; }
 .nav-item:hover { background: #132b49; color: var(--brand-white); }

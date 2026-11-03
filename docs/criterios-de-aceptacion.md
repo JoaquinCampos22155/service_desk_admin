@@ -10,7 +10,7 @@ La rúbrica de Fase 2 distribuye su ponderación así:
 | 50% | Identificación y categorización de servicios y problemas conforme a Fase 1. | Catálogo de ocho elementos, tipo solicitud/incidente, responsables AM/CS, prioridad por impacto/urgencia y mapa de patrones con análisis documentable. |
 | 25% | Demo y presentación. | Recorrido de marca y consumidor; mostrar registro, cola, detalle, actualización, prioridades, gráficas de tickets y análisis de problemas. |
 
-Las casillas indican cobertura implementada y revisada en código/documentación; la lógica de análisis, comunicación y filtros se valida con `node --test tests/app.test.js`, y `node --check app.js` valida sintaxis. Queda pendiente el ensayo interactivo completo de la demo en el navegador antes de presentar.
+Las casillas indican cobertura implementada y revisada en código/documentación; la lógica se valida con `pnpm test` y `pnpm build`. El ensayo en navegador requiere configurar un proyecto Supabase y usuarios de prueba.
 
 ## Requisitos funcionales de Fase 2
 
@@ -58,4 +58,4 @@ Las casillas indican cobertura implementada y revisada en código/documentación
 
 ## Límites de esta demo
 
-La aplicación usa datos ficticios y almacenamiento local del navegador. No autentica usuarios, no conecta Freshdesk, no envía correos y no integra plataformas de e-commerce, pagos, fulfillment o proveedores. La demo ilustra el flujo requerido por el curso; una operación real necesitaría backend, permisos y persistencia compartida.
+La aplicación usa Supabase Auth para acceso y comparte tickets y categorías personalizadas en Supabase con políticas RLS. El análisis manual de problemas sigue en almacenamiento local. No conecta Freshdesk ni integra plataformas de e-commerce, pagos, fulfillment o proveedores; las cuentas del equipo se crean desde Supabase y no hay registro público.
