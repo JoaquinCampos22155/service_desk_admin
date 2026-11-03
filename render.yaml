@@ -3,7 +3,7 @@ services:
     name: bevstack-service-desk
     runtime: static
     branch: main
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    buildCommand: pnpm install --frozen-lockfile && pnpm build
     staticPublishPath: dist
     envVars:
       - key: VITE_SUPABASE_URL
