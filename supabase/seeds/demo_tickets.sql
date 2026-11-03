@@ -33,11 +33,6 @@ with demo_tickets (
     ('DEMO-022', '[DEMO] Diferencia de existencias en varios SKU', 'incorrect-inventory', 'Incidente', 'Medio', 'Alta', 'P1', 'En espera', 'Proveedor externo', 'Account Management', 'Portal de marca', 'Fuego Norte', 'DEMO-ORD-022', 'Caso ficticio: varios SKU muestran cantidades desactualizadas después de una sincronización.', 'Marca', 'Equipo de operaciones (demo)', 'operaciones@fuego-norte.example', 151, 'Caso de demostración: se espera evidencia del proveedor para completar la conciliación.'),
     ('DEMO-023', '[DEMO] Pedido consumidor no pasa a preparación', 'unprocessed-order', 'Incidente', 'Medio', 'Media', 'P2', 'Nuevo', 'Customer Service', 'Customer Service', 'Correo de Customer Service', 'Altura Gin', 'DEMO-ORD-023', 'Caso ficticio: la orden aparece confirmada, pero no muestra avance hacia preparación.', 'Consumidor', 'Consumidor de demostración', 'demo@example.com', 158, null),
     ('DEMO-024', '[DEMO] Actualizar reglas para temporada alta', 'shipping-rules', 'Solicitud', 'Bajo', 'Baja', 'P3', 'Cerrado', 'Account Management', 'Account Management', 'Portal de marca', 'Nébula Spirits', '', 'Caso ficticio: ajuste planificado de condiciones de envío para una temporada de alta demanda.', 'Marca', 'Equipo de operaciones (demo)', 'operaciones@nebula.example', 165, 'Caso de demostración: actualización programada aplicada y revisada con la marca.')
-), prepared as (
-  select
-    demo_tickets.*,
-    now() - make_interval(hours => age_hours) as created_at
-  from demo_tickets
 )
 insert into public.tickets (
   id, subject, category_id, type, impact, urgency, priority, status,
@@ -48,8 +43,9 @@ insert into public.tickets (
 select
   id, subject, category_id, type, impact, urgency, priority, status,
   assignee, communication_owner, channel, brand, order_id, description,
-  requester_type, requester_name, requester_email, created_at,
-  created_at + interval '2 hours',
+  requester_type, requester_name, requester_email,
+  now() - make_interval(hours => age_hours),
+  now() - make_interval(hours => age_hours) + interval '2 hours',
   case
     when public_update is null then '[]'::jsonb
     else jsonb_build_array(jsonb_build_object(
@@ -57,14 +53,14 @@ select
       'author', communication_owner,
       'body', public_update,
       'visibility', 'Público',
-      'createdAt', created_at + interval '15 minutes'
+      'createdAt', now() - make_interval(hours => age_hours) + interval '15 minutes'
     ))
   end,
-  case when status = 'Nuevo' then null else created_at + interval '10 minutes' end,
-  case when status in ('Resuelto', 'Cerrado') then created_at + interval '1 hour' else null end,
+  case when status = 'Nuevo' then null else now() - make_interval(hours => age_hours) + interval '10 minutes' end,
+  case when status in ('Resuelto', 'Cerrado') then now() - make_interval(hours => age_hours) + interval '1 hour' else null end,
   0,
   null
-from prepared
+from demo_tickets
 on conflict (id) do nothing
 returning id;
 
