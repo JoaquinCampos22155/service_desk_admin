@@ -1,8 +1,6 @@
 "use strict";
 
-const STORAGE_KEY = "bevstack-service-desk-v1";
 const PROBLEM_STORAGE_KEY = "bevstack-service-desk-problems-v1";
-const CATALOG_STORAGE_KEY = "bevstack-service-desk-catalog-v1";
 const STATUSES = ["Nuevo", "En progreso", "En espera", "Escalado", "Resuelto", "Cerrado"];
 const ASSIGNEES = ["Account Management", "Customer Service", "Team de Tech", "Directora de Tech", "Proveedor externo"];
 const PRIORITY_RULES = {
@@ -29,31 +27,7 @@ const DEFAULT_CATALOG = [
   { id: "payment-without-order", name: "Pago completado sin creación del pedido", type: "Incidente", owner: "Customer Service / Team de Tech", reporter: "Operaciones, e-commerce o consumidor vía Customer Service", description: "El pago se registró, pero la orden correspondiente no aparece correctamente en la operación." },
   { id: "shipping-unavailable", name: "Opción de envío no disponible", type: "Incidente", owner: "Account Management / Customer Service", reporter: "Operaciones, e-commerce o consumidor vía Customer Service", description: "No se puede utilizar una opción de envío que debería estar habilitada para el pedido." },
 ];
-const CATALOG = [...DEFAULT_CATALOG, ...loadCustomCatalog()];
-
-function loadCustomCatalog() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(CATALOG_STORAGE_KEY) || "[]");
-    if (!Array.isArray(saved)) return [];
-    const defaultIds = new Set(DEFAULT_CATALOG.map((item) => item.id));
-    const seenIds = new Set();
-    return saved.filter((item) => {
-      if (!item || typeof item.id !== "string" || !item.id || defaultIds.has(item.id) || seenIds.has(item.id)
-        || !["Solicitud", "Incidente"].includes(item.type)
-        || ![item.name, item.description, item.reporter, item.owner].every((value) => typeof value === "string" && value.trim())) return false;
-      seenIds.add(item.id);
-      return true;
-    });
-  } catch (error) {
-    console.warn("No se pudo leer el catálogo personalizado de la demo.", error);
-    return [];
-  }
-}
-
-function persistCustomCatalog() {
-  const defaultIds = new Set(DEFAULT_CATALOG.map((item) => item.id));
-  localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(CATALOG.filter((item) => !defaultIds.has(item.id))));
-}
+const CATALOG = [...DEFAULT_CATALOG];
 
 function addCatalogCategory(values) {
   const category = Object.fromEntries(["name", "type", "description", "reporter", "owner"].map((key) => [key, String(values[key] || "").trim()]));
@@ -62,13 +36,10 @@ function addCatalogCategory(values) {
   if (CATALOG.some((item) => item.type === category.type && item.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es") === normalizedName)) return null;
   const baseId = slugify(category.name);
   if (!baseId) return null;
-  let id = baseId;
+  let id = window.crypto?.randomUUID ? `${baseId}-${window.crypto.randomUUID()}` : baseId;
   let suffix = 2;
   while (CATALOG.some((item) => item.id === id)) id = `${baseId}-${suffix++}`;
-  const savedCategory = { id, ...category };
-  CATALOG.push(savedCategory);
-  persistCustomCatalog();
-  return savedCategory;
+  return { id, ...category };
 }
 
 const state = {
@@ -80,9 +51,13 @@ const state = {
   ticketSort: null,
   selectedTicketId: null,
   pendingStatusChange: null,
-  tickets: typeof ServiceDeskAuth === "undefined" ? loadTickets() : [],
+  tickets: [],
   problemRecords: loadProblemRecords(),
   authSession: null,
+  dataLoaded: false,
+  dataUserId: null,
+  dataLoadingUserId: null,
+  dataLoadPromise: null,
 };
 
 const appContent = document.querySelector("#app-content");
@@ -107,26 +82,6 @@ function seedTickets() {
   ];
   return seed.map((row, index) => ({
     id: row[0], subject: row[1], categoryId: row[2], type: row[3], impact: row[4], urgency: row[5], priority: PRIORITY_RULES[row[4]][row[5]], status: row[6], assignee: row[7], communicationOwner: row[8].includes("Customer Service") ? "Customer Service" : "Account Management", channel: row[8], brand: row[9], orderId: row[10], createdAt: isoAgo(row[11]), updatedAt: isoAgo(Math.max(5, row[11] - 10)), description: row[12], requesterType: row[8].includes("Customer Service") ? "Consumidor" : "Marca", requesterName: row[8].includes("Customer Service") ? "Persona consumidora" : `Equipo de ${row[9]}`, requesterEmail: row[8].includes("Customer Service") ? "consumidor@example.com" : `operaciones@${slugify(row[9])}.com`, comments: row[13].map((content, commentIndex) => ({ id: `${row[0]}-C${commentIndex}`, author: row[8].includes("Customer Service") ? "Customer Service" : "Account Management", body: content, visibility: "Público", createdAt: isoAgo(Math.max(1, row[11] - 8)) })), firstResponseAt: index < 8 ? isoAgo(Math.max(1, row[11] - 8)) : null, resolvedAt: ["Resuelto", "Cerrado"].includes(row[6]) ? isoAgo(Math.max(1, row[11] - 3)) : null, reopenedCount: 0 }));
-}
-
-function loadTickets() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) {
-        const migrated = migrateLegacyTicketStatuses(parsed);
-        const refreshed = refreshStaleDemoDates(migrated);
-        if (refreshed !== parsed) localStorage.setItem(STORAGE_KEY, JSON.stringify(refreshed));
-        return refreshed;
-      }
-    }
-  } catch (error) {
-    console.warn("No se pudo leer el almacenamiento local de la demo.", error);
-  }
-  const seeded = seedTickets();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
-  return seeded;
 }
 
 function migrateLegacyTicketStatuses(tickets) {
@@ -179,14 +134,33 @@ function loadProblemRecords() {
   return {};
 }
 
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tickets));
-  updateNavCounts();
-}
-
 function persistProblemRecords() {
   localStorage.setItem(PROBLEM_STORAGE_KEY, JSON.stringify(state.problemRecords));
   updateNavCounts();
+}
+
+function applySharedData(data) {
+  state.tickets = data.tickets || [];
+  CATALOG.splice(DEFAULT_CATALOG.length, CATALOG.length - DEFAULT_CATALOG.length, ...(data.customCategories || []));
+  state.dataLoaded = true;
+  updateNavCounts();
+}
+
+async function saveTicketDraft(current, draft) {
+  try {
+    const saved = await window.ServiceDeskData.updateTicket(draft, current.updatedAt);
+    const index = state.tickets.findIndex((ticket) => ticket.id === current.id);
+    if (index >= 0) state.tickets[index] = saved;
+    updateNavCounts();
+    return saved;
+  } catch (error) {
+    if (error.name === "TicketConflictError") {
+      try { applySharedData(await window.ServiceDeskData.load()); } catch { /* Keep the current view and explain the conflict. */ }
+      render();
+    }
+    showToast(error.message || "No se pudo guardar el cambio.", "error");
+    return null;
+  }
 }
 
 function slugify(value) {
@@ -621,26 +595,26 @@ function cancelStatusChange() {
   return true;
 }
 
-function confirmStatusChange() {
+async function confirmStatusChange() {
   const pending = state.pendingStatusChange;
-  state.pendingStatusChange = null;
   if (!pending) return null;
   const ticket = state.tickets.find((item) => item.id === pending.ticketId);
   if (!ticket || !STATUSES.includes(pending.nextStatus) || ticket.status === pending.nextStatus) return null;
   const previousStatus = ticket.status;
   const previousPriority = ticket.priority;
   const now = new Date().toISOString();
-  Object.assign(ticket, pending.updates || {});
-  ticket.status = pending.nextStatus;
-  if (["Resuelto", "Cerrado"].includes(pending.nextStatus) && !ticket.resolvedAt) ticket.resolvedAt = now;
+  const draft = { ...ticket, ...(pending.updates || {}) };
+  draft.status = pending.nextStatus;
+  if (["Resuelto", "Cerrado"].includes(pending.nextStatus) && !draft.resolvedAt) draft.resolvedAt = now;
   if (["Resuelto", "Cerrado"].includes(previousStatus) && !["Resuelto", "Cerrado"].includes(pending.nextStatus)) {
-    ticket.resolvedAt = null;
-    ticket.reopenedCount = (ticket.reopenedCount || 0) + 1;
+    draft.resolvedAt = null;
+    draft.reopenedCount = (draft.reopenedCount || 0) + 1;
   }
-  ticket.updatedAt = now;
-  if (ticket.priority !== previousPriority) ticket.priorityChangedAt = now;
-  persist();
-  return ticket;
+  draft.updatedAt = now;
+  if (draft.priority !== previousPriority) draft.priorityChangedAt = now;
+  const saved = await saveTicketDraft(ticket, draft);
+  if (saved) state.pendingStatusChange = null;
+  return saved;
 }
 
 function statusChangeDialogMarkup(ticketId, nextStatus) {
@@ -699,21 +673,21 @@ function renderServiceLevels() {
   const resolvedWithTime = terminal.filter((ticket) => ticket.resolvedAt).length;
   const reopened = terminal.filter((ticket) => Number(ticket.reopenedCount || 0) > 0).length;
   return `<div class="page-heading"><div><h1>Niveles de servicio</h1><p class="page-subtitle">Metas visibles para las marcas y acuerdos internos que permiten cumplirlas.</p></div></div>
-    <div class="section-note"><strong>Distinción para esta demo:</strong> la Fase 1 fija metas mensuales de desempeño de 95%. Como no define una consecuencia contractual por incumplimiento, aquí se presentan como <strong>SLO internos</strong>. Un SLA formal con la marca requiere acordar la consecuencia.</div>
+    <div class="section-note"><strong>Distinción del modelo operativo:</strong> la Fase 1 fija metas mensuales de desempeño de 95%. Como no define una consecuencia contractual por incumplimiento, aquí se presentan como <strong>SLO internos</strong>. Un SLA formal con la marca requiere acordar la consecuencia.</div>
     <section class="levels-grid"><div class="panel levels-targets"><div class="panel-heading"><div><h2>Metas por prioridad</h2><p>Ventana de medición del SLO: mensual, según prioridad.</p></div><span class="section-marker blue">SLO</span></div><div class="sla-table-wrap" role="region" aria-label="Metas por prioridad, desplazable horizontalmente"><table class="sla-table"><thead><tr><th>Prioridad</th><th>Primera respuesta</th><th>Restaurar incidente</th><th>Cumplir solicitud</th></tr></thead><tbody>${priorityRows}</tbody></table></div><div class="service-window"><span class="service-window-icon">◷</span><div><strong>Horario de atención</strong><br/>Lunes a viernes, 9:00 a. m. a 6:00 p. m., hora del Este de EE. UU. Fuera de horario se escala la afectación crítica.</div></div><div class="info-banner"><strong>Cómo leer la meta:</strong> cada SLO se evalúa mensualmente; el objetivo es cumplir al menos 95% de los casos elegibles. Incidente mide restauración del servicio; solicitud mide entrega de la acción solicitada.</div></div>
       <div class="panel levels-chain"><div class="panel-heading"><div><h2>Acuerdos internos (OLA)</h2><p>Los tiempos internos sostienen la meta de cara a la marca.</p></div><span class="section-marker cyan">OLA</span></div><div class="sla-chain"><div class="chain-row"><strong>Account Management / Customer Service</strong><span class="chain-arrow">→</span><span>Registrar y asignar<br/><b>P1 10 min · P2 30 min · P3 1 h</b></span></div><div class="chain-row"><strong>Team de Tech</strong><span class="chain-arrow">→</span><span>Iniciar revisión<br/><b>P1 15 min · P2 1 h · P3 4 h</b></span></div><div class="chain-row"><strong>Directora de Tech</strong><span class="chain-arrow">→</span><span>Revisar escalación crítica<br/><b>Máximo 30 min</b></span></div><div class="chain-row"><strong>Developer externo</strong><span class="chain-arrow">→</span><span>Confirmar recepción<br/><b>Máximo 2 h cuando aplique</b></span></div></div><div class="info-banner"><strong>Dependencia externa:</strong> validar el compromiso del proveedor (UC) y que el recorrido completo deje margen para cumplir la meta al usuario.</div></div>
     </section>
     <section class="panel escalation-panel"><div class="panel-heading"><div><h2>Escalamiento y comunicación</h2><p>Escalar cambia quién resuelve; no quién mantiene informado al usuario.</p></div></div><div class="escalation-grid"><div class="escalation-route functional"><span>Funcional · conocimiento técnico</span><strong>N1 AM/CS <i>→</i> N2 Tech <i>→</i> N3 proveedor</strong></div><div class="escalation-route hierarchical"><span>Jerárquico · autoridad o recursos</span><strong>Tech Lead <i>→</i> dirección / CEO</strong></div><div class="escalation-route communication"><span>Comunicación visible al usuario</span><strong>AM para marcas · CS para consumidores</strong></div></div></section>
     <section class="improvement-section"><div class="panel-heading"><div><h2>Indicadores de mejora</h2><p>Qué se mide, cómo se calcula, qué meta aplica y qué información falta para tomar decisiones.</p></div><span class="section-marker navy">SLI / SLO</span></div>
       <div class="indicator-grid">
-        <article class="indicator-card response-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · experiencia</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Primera respuesta dentro del objetivo</h3><p>Casos dentro del objetivo ÷ casos con respuesta registrada. Segmentar por prioridad, marca y origen.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${responded} de ${state.tickets.length} tickets tienen primera respuesta registrada.</span></div></article>
-        <article class="indicator-card resolution-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · resultado</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Restauración o cumplimiento en plazo</h3><p>Casos resueltos dentro del objetivo ÷ casos resueltos elegibles. Incidentes restaurados; solicitudes cumplidas.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${resolvedWithTime} de ${terminal.length} tickets resueltos/cerrados tienen fecha de resolución.</span></div></article>
+        <article class="indicator-card response-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · experiencia</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Primera respuesta dentro del objetivo</h3><p>Casos dentro del objetivo ÷ casos con respuesta registrada. Segmentar por prioridad, marca y origen.</p><div class="indicator-evidence"><strong>Datos cargados</strong><span>${responded} de ${state.tickets.length} tickets tienen primera respuesta registrada.</span></div></article>
+        <article class="indicator-card resolution-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · resultado</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Restauración o cumplimiento en plazo</h3><p>Casos resueltos dentro del objetivo ÷ casos resueltos elegibles. Incidentes restaurados; solicitudes cumplidas.</p><div class="indicator-evidence"><strong>Datos cargados</strong><span>${resolvedWithTime} de ${terminal.length} tickets resueltos/cerrados tienen fecha de resolución.</span></div></article>
         <article class="indicator-card assignment-indicator"><div class="indicator-top"><span class="indicator-kind">SLO interno</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Registro, prioridad y asignación</h3><p>Casos registrados, priorizados y asignados dentro del tiempo de triage ÷ casos recibidos; revisión mensual.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Falta registrar cuándo se completó el triage y la asignación.</span></div></article>
         <article class="indicator-card first-contact-indicator"><div class="indicator-top"><span class="indicator-kind">Eficacia · sin meta acordada</span><span class="indicator-target neutral">Definir umbral</span></div><h3>Resolución en primer contacto</h3><p>Casos resueltos sin transferencia ni contacto adicional ÷ casos atendidos. Ayuda a detectar fricción en N1.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Registrar resolución en primer contacto y número de contactos.</span></div></article>
-        <article class="indicator-card reopen-indicator"><div class="indicator-top"><span class="indicator-kind">Recurrencia · sin meta acordada</span><span class="indicator-target neutral">Definir umbral</span></div><h3>Reaperturas</h3><p>Casos reabiertos ÷ casos resueltos/cerrados. Revisar tendencia por marca y categoría como señal de solución incompleta.</p><div class="indicator-evidence"><strong>Muestra de demostración</strong><span>${reopened} de ${terminal.length} tickets resueltos/cerrados tienen al menos una reapertura.</span></div></article>
+        <article class="indicator-card reopen-indicator"><div class="indicator-top"><span class="indicator-kind">Recurrencia · sin meta acordada</span><span class="indicator-target neutral">Definir umbral</span></div><h3>Reaperturas</h3><p>Casos reabiertos ÷ casos resueltos/cerrados. Revisar tendencia por marca y categoría como señal de solución incompleta.</p><div class="indicator-evidence"><strong>Datos cargados</strong><span>${reopened} de ${terminal.length} tickets resueltos/cerrados tienen al menos una reapertura.</span></div></article>
         <article class="indicator-card satisfaction-indicator"><div class="indicator-top"><span class="indicator-kind">Experiencia · sin meta acordada</span><span class="indicator-target neutral">Definir encuesta</span></div><h3>Satisfacción</h3><p>Promedio de encuesta posterior al cierre y tasa de respuesta; comparar con reaperturas y cumplimiento del SLO.</p><div class="indicator-evidence unavailable"><strong>No medible aún</strong><span>Definir escala, momento de encuesta y campo de respuesta.</span></div></article>
       </div>
-      <div class="measurement-note"><strong>Lectura honesta de datos:</strong> los conteos de cobertura y reapertura corresponden a tickets ficticios para la demo, no son resultados reales de Bevstack. Para cumplimiento porcentual se necesitan marcas de tiempo confiables y cálculo del horario hábil acordado.</div>
+      <div class="measurement-note"><strong>Lectura de los indicadores:</strong> la cobertura y las reaperturas se calculan sobre los tickets cargados en el Service Desk. Para medir cumplimiento real del SLO hacen falta marcas de tiempo confiables, horario hábil acordado y plazos objetivo registrados por prioridad.</div>
     </section>`;
 }
 
@@ -761,7 +735,7 @@ function openCategoryDialog() {
   document.body.append(modalHost);
   const form = modalHost.querySelector("#category-form");
   form.querySelector("#category-name").focus();
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
     const category = addCatalogCategory(values);
@@ -769,6 +743,18 @@ function openCategoryDialog() {
       const error = form.querySelector("#category-error");
       error.hidden = false;
       error.textContent = "Completa todos los campos y verifica que no exista otra categoría con el mismo nombre y tipo.";
+      return;
+    }
+    const submit = modalHost.querySelector('button[form="category-form"]');
+    if (submit) submit.disabled = true;
+    try {
+      const saved = await window.ServiceDeskData.createCategory(category);
+      CATALOG.push(saved);
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const fieldError = form.querySelector("#category-error");
+      fieldError.hidden = false;
+      fieldError.textContent = error.code === "23505" ? "Ya existe una categoría con ese nombre y tipo." : error.message || "No se pudo guardar la categoría. Revisa la conexión e inténtalo de nuevo.";
       return;
     }
     closeModal();
@@ -821,6 +807,7 @@ function createFormMarkup() {
       <div class="field"><label for="ticket-urgency">Urgencia <span class="required">*</span></label><select id="ticket-urgency" name="urgency" required><option value="Alta">Alta</option><option value="Media">Media</option><option selected value="Baja">Baja</option></select><small>Alta: ocurre ahora y puede causar pérdidas. Media: resolver hoy. Baja: puede programarse.</small></div>
       <div class="field full"><div class="priority-preview" aria-live="polite"><div><strong>Prioridad calculada</strong><small>Se determina por impacto y urgencia.</small></div><span id="priority-preview-pill" class="priority-pill p3">P3</span></div></div>
       <div id="request-hint" class="field full request-hint" hidden>Esta solicitud entra a su cola separada para cumplir una acción planificada; no desplaza incidentes que requieren restauración.</div>
+      <p id="ticket-error" class="form-error full" role="alert" hidden></p>
     </div></fieldset></form>`;
 }
 
@@ -844,25 +831,35 @@ function bindCreateForm(form) {
   form.addEventListener("input", (event) => {
     if (["ticket-impact", "ticket-urgency"].includes(event.target.id)) updatePriorityPreview(form);
   });
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
     const category = categoryById(values.categoryId);
     const type = values.type;
     const requesterType = values.requesterType;
-    const ticketId = nextTicketId();
     const now = new Date().toISOString();
     const assignee = type === "Solicitud" ? "Account Management" : requesterType === "Consumidor" ? "Customer Service" : "Account Management";
     const ticket = {
-      id: ticketId, type, categoryId: category.id, subject: values.subject.trim(), description: values.description.trim(),
+      type, categoryId: category.id, subject: values.subject.trim(), description: values.description.trim(),
       requesterType, communicationOwner: requesterType === "Consumidor" ? "Customer Service" : "Account Management", requesterName: values.requesterName.trim(), requesterEmail: values.requesterEmail.trim(),
       brand: values.brand.trim(), orderId: values.orderId.trim(), channel: values.channel,
       impact: values.impact, urgency: values.urgency, priority: calculatePriority(values.impact, values.urgency),
       status: "Nuevo", assignee, createdAt: now, updatedAt: now, comments: [], firstResponseAt: null,
       resolvedAt: null, reopenedCount: 0,
     };
-    state.tickets.unshift(ticket);
-    persist();
+    const submit = document.querySelector('button[form="ticket-form"]');
+    if (submit) submit.disabled = true;
+    let saved;
+    try {
+      saved = await window.ServiceDeskData.createTicket(ticket);
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const fieldError = form.querySelector("#ticket-error");
+      if (fieldError) { fieldError.hidden = false; fieldError.textContent = error.message || "No se pudo guardar el ticket. Tus datos siguen en el formulario."; }
+      else showToast(error.message || "No se pudo guardar el ticket. Tus datos siguen en el formulario.", "error");
+      return;
+    }
+    state.tickets.unshift(saved);
     closeModal();
     state.view = "tickets";
     state.typeFilter = type;
@@ -870,8 +867,8 @@ function bindCreateForm(form) {
     state.statusFilter = "Todos los estados";
     state.priorityFilter = "Todas las prioridades";
     render();
-    showToast(`${ticketId} creado y agregado a la cola de ${type.toLocaleLowerCase("es")}.`);
-    openTicket(ticketId);
+    showToast(`${saved.id} creado y agregado a la cola de ${type.toLocaleLowerCase("es")}.`);
+    openTicket(saved.id);
   });
 }
 
@@ -886,11 +883,6 @@ function updatePriorityPreview(form) {
   const pill = form.querySelector("#priority-preview-pill");
   pill.textContent = priority;
   pill.className = `priority-pill ${priority.toLowerCase()}`;
-}
-
-function nextTicketId() {
-  const max = Math.max(1048, ...state.tickets.map((ticket) => Number(ticket.id.match(/\d+$/)?.[0] || 0)));
-  return `BV-${max + 1}`;
 }
 
 function closeModal() {
@@ -957,7 +949,7 @@ function bindDetail(host, ticketId) {
       editForm.querySelector("#edit-priority").value = calculatePriority(editForm.querySelector("#edit-impact").value, editForm.querySelector("#edit-urgency").value);
     }
   });
-  editForm.addEventListener("submit", (event) => {
+  editForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const ticket = state.tickets.find((item) => item.id === ticketId);
     const oldStatus = ticket.status;
@@ -971,25 +963,25 @@ function bindDetail(host, ticketId) {
       openStatusConfirmation(ticketId, nextStatus, values);
       return;
     }
-    Object.assign(ticket, values);
-    ticket.updatedAt = new Date().toISOString();
-    if (ticket.priority !== oldPriority) ticket.priorityChangedAt = ticket.updatedAt;
-    persist();
+    const draft = { ...ticket, ...values, updatedAt: new Date().toISOString() };
+    if (draft.priority !== oldPriority) draft.priorityChangedAt = draft.updatedAt;
+    const saved = await saveTicketDraft(ticket, draft);
+    if (!saved) return;
     closeModal();
     render();
     showToast(`${ticket.id} actualizado.`);
     openTicket(ticketId);
   });
-  host.querySelector("#comment-form").addEventListener("submit", (event) => {
+  host.querySelector("#comment-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form).entries());
     const ticket = state.tickets.find((item) => item.id === ticketId);
     const now = new Date().toISOString();
-    ticket.comments.push({ id: `${ticket.id}-${Date.now()}`, author: commentAuthorFor(ticket, values.visibility), body: values.body.trim(), visibility: values.visibility, createdAt: now });
-    if (!ticket.firstResponseAt && values.visibility === "Público") ticket.firstResponseAt = now;
-    ticket.updatedAt = now;
-    persist();
+    const draft = { ...ticket, comments: [...(ticket.comments || []), { id: `${ticket.id}-${Date.now()}`, author: commentAuthorFor(ticket, values.visibility), body: values.body.trim(), visibility: values.visibility, createdAt: now }], updatedAt: now };
+    if (!draft.firstResponseAt && values.visibility === "Público") draft.firstResponseAt = now;
+    const saved = await saveTicketDraft(ticket, draft);
+    if (!saved) return;
     closeModal();
     render();
     openTicket(ticketId);
@@ -997,11 +989,13 @@ function bindDetail(host, ticketId) {
   });
 }
 
-document.body.addEventListener("click", (event) => {
+document.body.addEventListener("click", async (event) => {
   const authAction = event.target.closest("[data-auth-action]")?.dataset.authAction;
   if (authAction === "forgot-password") { renderAuthScreen("reset"); return; }
   if (authAction === "back-to-login") { renderAuthScreen("login"); return; }
   if (authAction === "open-service-desk") { activateServiceDesk(state.authSession); return; }
+  if (authAction === "retry-load") { activateServiceDesk(state.authSession); return; }
+  if (authAction === "sign-out") { ServiceDeskAuth.signOut().catch((error) => renderAuthScreen("data-error", error.message, true)); return; }
   if (event.target.closest('[data-action="sign-out"]')) {
     ServiceDeskAuth.signOut().catch((error) => showToast(error.message, "error"));
     return;
@@ -1031,7 +1025,8 @@ document.body.addEventListener("click", (event) => {
   if (action === "choose-card-status") { openCardStatusPicker(event.target.closest("[data-ticket-id]").dataset.ticketId); return; }
   if (action === "cancel-status-change") { cancelStatusChange(); closeModal(); return; }
   if (action === "confirm-status-change") {
-    const ticket = confirmStatusChange();
+    const ticket = await confirmStatusChange();
+    if (!ticket) return;
     closeModal();
     render();
     if (ticket) showToast(`${ticket.id} pasó a ${ticket.status}.`);
@@ -1051,29 +1046,63 @@ function renderAuthScreen(mode = "login", message = "", isError = false) {
   const host = document.querySelector("#auth-shell");
   const shell = document.querySelector(".app-shell");
   if (!host || !shell) return;
+  document.querySelector("#modal-host")?.remove();
   shell.hidden = true;
   host.hidden = false;
   const login = mode === "login";
   const reset = mode === "reset";
-  const title = login ? "Inicia sesión" : reset ? "Recupera tu acceso" : "Actualiza tu contraseña";
-  const description = login ? "Acceso para el equipo de operación de Bevstack." : reset ? "Te enviaremos un enlace al correo de tu cuenta." : "Define una nueva contraseña para continuar.";
-  const form = login ? `<form id="auth-login-form" class="auth-form"><label>Correo del equipo<input type="email" name="email" autocomplete="username" required /></label><label>Contraseña<input type="password" name="password" autocomplete="current-password" required /></label><button class="primary-button" type="submit">Iniciar sesión</button><button class="auth-text-button" type="button" data-auth-action="forgot-password">Olvidé mi contraseña</button></form>`
+  const loading = mode === "loading";
+  const dataError = mode === "data-error";
+  const title = loading ? "Conectando al Service Desk" : dataError ? "No se pudieron cargar los datos" : login ? "Inicia sesión" : reset ? "Recupera tu acceso" : "Actualiza tu contraseña";
+  const description = loading ? "Estamos preparando la bandeja compartida del equipo." : dataError ? "La sesión está activa, pero no se pudo leer la información compartida." : login ? "Acceso para el equipo de operación de Bevstack." : reset ? "Te enviaremos un enlace al correo de tu cuenta." : "Define una nueva contraseña para continuar.";
+  const form = loading ? `<div class="auth-loading" role="status">Conectando con la base de datos segura...</div>`
+    : dataError ? `<div class="auth-form"><button class="primary-button" type="button" data-auth-action="retry-load">Reintentar conexión</button><button class="auth-text-button" type="button" data-auth-action="sign-out">Cerrar sesión</button></div>`
+    : login ? `<form id="auth-login-form" class="auth-form"><label>Correo del equipo<input type="email" name="email" autocomplete="username" required /></label><label>Contraseña<input type="password" name="password" autocomplete="current-password" required /></label><button class="primary-button" type="submit">Iniciar sesión</button><button class="auth-text-button" type="button" data-auth-action="forgot-password">Olvidé mi contraseña</button></form>`
     : reset ? `<form id="auth-reset-form" class="auth-form"><label>Correo del equipo<input type="email" name="email" autocomplete="email" required /></label><button class="primary-button" type="submit">Enviar enlace de recuperación</button><button class="auth-text-button" type="button" data-auth-action="back-to-login">Volver al inicio de sesión</button></form>`
-      : `<form id="auth-update-form" class="auth-form"><label>Nueva contraseña<input type="password" name="password" autocomplete="new-password" minlength="8" required /></label><label>Confirma la contraseña<input type="password" name="confirmPassword" autocomplete="new-password" minlength="8" required /></label><button class="primary-button" type="submit">Guardar contraseña</button><button class="auth-text-button" type="button" data-auth-action="open-service-desk">Continuar al Service Desk</button></form>`;
-  host.innerHTML = `<section class="auth-card" aria-labelledby="auth-title"><div class="auth-brand"><span class="auth-brand-mark">b</span><span><strong>bevstack</strong><small>SERVICE DESK</small></span></div><div class="auth-copy"><h1 id="auth-title">${title}</h1><p>${description}</p></div>${message ? `<p class="auth-message ${isError ? "error" : "success"}" role="status">${escapeHTML(message)}</p>` : ""}${form}<p class="auth-invite-note">Las cuentas son creadas por la administración del equipo.</p></section>`;
+      : `<form id="auth-update-form" class="auth-form"><label>Nueva contraseña<input type="password" name="password" autocomplete="new-password" minlength="8" required /></label><label>Confirma la contraseña<input type="password" name="confirmPassword" autocomplete="new-password" minlength="8" required /></label><button class="primary-button" type="submit">Guardar contraseña</button></form>${message && !isError ? `<button class="auth-text-button" type="button" data-auth-action="open-service-desk">Continuar al Service Desk</button>` : ""}`;
+  host.innerHTML = `<section class="auth-card" aria-labelledby="auth-title"><div class="auth-brand"><span class="auth-brand-mark">b</span><span><strong>bevstack</strong><small>SERVICE DESK</small></span></div><div class="auth-copy"><h1 id="auth-title">${title}</h1><p>${description}</p></div>${message ? `<p class="auth-message ${isError ? "error" : "success"}" role="status">${escapeHTML(message)}</p>` : ""}${form}${loading || dataError ? "" : `<p class="auth-invite-note">Las cuentas son creadas por la administración del equipo.</p>`}</section>`;
 }
 
-function activateServiceDesk(session) {
+async function activateServiceDesk(session) {
   if (!session) { renderAuthScreen("login", "Inicia sesión para continuar.", true); return; }
-  const sameSession = state.authSession?.access_token === session.access_token;
+  const userId = session.user?.id || session.user?.email;
+  if (state.dataLoaded && state.dataUserId === userId) {
+    state.authSession = session;
+    document.querySelector("#auth-shell").hidden = true;
+    document.querySelector(".app-shell").hidden = false;
+    return;
+  }
+  if (state.dataLoadPromise && state.dataLoadingUserId === userId) {
+    await state.dataLoadPromise;
+    return;
+  }
   state.authSession = session;
+  renderAuthScreen("loading");
+  state.dataLoadingUserId = userId;
+  const request = window.ServiceDeskData.load();
+  state.dataLoadPromise = request;
+  try {
+    const data = await request;
+    if ((state.authSession?.user?.id || state.authSession?.user?.email) !== userId) return;
+    applySharedData(data);
+    state.dataUserId = userId;
+  } catch (error) {
+    state.dataLoaded = false;
+    renderAuthScreen("data-error", error.message || "Verifica la conexión y vuelve a intentarlo.", true);
+    return;
+  } finally {
+    if (state.dataLoadPromise === request) {
+      state.dataLoadPromise = null;
+      state.dataLoadingUserId = null;
+    }
+  }
   const authShell = document.querySelector("#auth-shell");
   const shell = document.querySelector(".app-shell");
   if (authShell) authShell.hidden = true;
   if (shell) shell.hidden = false;
   const email = document.querySelector("#profile-email");
   if (email) email.textContent = session.user?.email || "Cuenta del equipo";
-  if (!sameSession) render();
+  render();
 }
 
 document.body.addEventListener("submit", async (event) => {
@@ -1196,7 +1225,14 @@ if (typeof ServiceDeskAuth === "undefined") {
         state.authSession = session;
         renderAuthScreen("update");
       } else if (session) activateServiceDesk(session);
-      else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") renderAuthScreen("login");
+      else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") {
+        state.authSession = null;
+        state.dataLoaded = false;
+        state.dataUserId = null;
+        state.tickets = [];
+        CATALOG.splice(DEFAULT_CATALOG.length);
+        renderAuthScreen("login");
+      }
     },
   }).catch((error) => renderAuthScreen("login", error.message, true));
 }

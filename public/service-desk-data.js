@@ -101,7 +101,7 @@
         const payload = mapPayload(ticket, TICKET_COLUMNS);
         delete payload.id;
         delete payload.created_at;
-        payload.updated_at = new Date().toISOString();
+        delete payload.updated_at;
         const { data, error } = await client.from("tickets").update(payload)
           .eq("id", ticket.id)
           .eq("updated_at", expectedUpdatedAt)

@@ -56,6 +56,7 @@ test("creates with the server ID and rejects stale updates", async () => {
   assert.equal(client.calls[0].payload.id, undefined);
   await assert.rejects(data.updateTicket({ id: "BV-1049", status: "En progreso" }, "2026-11-01T10:00:00Z"), { name: "TicketConflictError" });
   assert.deepEqual(client.calls[1].filters, [["id", "BV-1049"], ["updated_at", "2026-11-01T10:00:00Z"]]);
+  assert.equal(client.calls[1].payload.updated_at, undefined);
 });
 
 test("duplicate category or database failure returns a typed error", async () => {

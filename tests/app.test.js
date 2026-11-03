@@ -4,13 +4,15 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadApp(storage = { getItem: () => null, setItem() {} }) {
+function loadApp(storage = { getItem: () => null, setItem() {} }, repository = {}) {
   const appPath = path.join(__dirname, "..", "public", "app.js");
   let source = fs.readFileSync(appPath, "utf8");
   source = source.replace(/\ndocument\.querySelector\("#today-label"\)\.textContent = [\s\S]*$/, "");
   source += `
     globalThis.__testApi = {
       state,
+      applySharedData: typeof applySharedData === "function" ? applySharedData : null,
+      saveTicketDraft: typeof saveTicketDraft === "function" ? saveTicketDraft : null,
       problemPatterns: typeof problemPatterns === "function" ? problemPatterns : null,
       renderProblems: typeof renderProblems === "function" ? renderProblems : null,
       renderTicketQueue: typeof renderTicketQueue === "function" ? renderTicketQueue : null,
@@ -33,6 +35,7 @@ function loadApp(storage = { getItem: () => null, setItem() {} }) {
       createFormMarkup: typeof createFormMarkup === "function" ? createFormMarkup : null,
       seedTickets: typeof seedTickets === "function" ? seedTickets : null,
       refreshStaleDemoDates: typeof refreshStaleDemoDates === "function" ? refreshStaleDemoDates : null,
+      migrateLegacyTicketStatuses: typeof migrateLegacyTicketStatuses === "function" ? migrateLegacyTicketStatuses : null,
       buildTicketIntakeTrend: typeof buildTicketIntakeTrend === "function" ? buildTicketIntakeTrend : null,
       businessMinutesBetween: typeof businessMinutesBetween === "function" ? businessMinutesBetween : null,
       responseMetricsByPriority: typeof responseMetricsByPriority === "function" ? responseMetricsByPriority : null,
@@ -48,15 +51,26 @@ function loadApp(storage = { getItem: () => null, setItem() {} }) {
   const elements = new Map([
     ["#app-content", { innerHTML: "" }],
     ["#page-crumb", { textContent: "" }],
+    ["#toast-region", { append() {} }],
   ]);
+  const serviceDeskData = {
+    async updateTicket(ticket) { return { ...ticket, updatedAt: new Date().toISOString() }; },
+    async load() { return { tickets: [], customCategories: [] }; },
+    ...repository,
+  };
   const context = {
     document: {
       querySelector: (selector) => elements.get(selector) || null,
       querySelectorAll: () => [],
+      createElement: () => ({ remove() {} }),
       body: { addEventListener() {} },
       addEventListener() {},
     },
     localStorage: storage,
+    window: {
+      ServiceDeskData: serviceDeskData,
+    },
+    setTimeout() {},
     console,
     Intl,
     Date,
@@ -72,6 +86,7 @@ function loadApp(storage = { getItem: () => null, setItem() {} }) {
   };
   vm.createContext(context);
   vm.runInContext(source, context, { filename: appPath });
+  context.__testApi.state.tickets = context.__testApi.seedTickets();
   return context.__testApi;
 }
 
@@ -249,17 +264,14 @@ test("all-ticket table adds sort controls only to the four requested columns", (
   assert.equal((html.match(/data-sort-key=/g) || []).length, 4);
 });
 
-test("removes triage as a ticket state and migrates saved tickets into progress", () => {
-  const stored = new Map([[
-    "bevstack-service-desk-v1",
-    JSON.stringify([{ id: "BV-OLD", type: "Incidente", categoryId: "payment-without-order", status: "En triage", createdAt: "2026-11-02T12:00:00Z" }]),
-  ]]);
-  const api = loadApp({ getItem: (key) => stored.get(key) || null, setItem: (key, value) => stored.set(key, value) });
-
-  assert.equal(api.state.tickets[0].status, "En progreso");
-  assert.equal(JSON.parse(stored.get("bevstack-service-desk-v1"))[0].status, "En progreso");
+test("removes triage as a ticket state and can migrate legacy values without local ticket storage", () => {
+  const accesses = [];
+  const api = loadApp({ getItem: (key) => { accesses.push(["get", key]); return null; }, setItem: (key) => accesses.push(["set", key]) });
+  const migrated = api.migrateLegacyTicketStatuses([{ id: "BV-OLD", status: "En triage" }]);
+  assert.equal(migrated[0].status, "En progreso");
   assert.equal(api.statuses.includes("En triage"), false);
   assert.equal(api.seedTickets().some((ticket) => ticket.status === "En triage"), false);
+  assert.equal(accesses.some(([, key]) => key.includes("service-desk-v1")), false);
 });
 
 test("incident and request pages render status columns while all tickets stays a table", () => {
@@ -289,9 +301,8 @@ test("incident and request pages render status columns while all tickets stays a
   assert.doesNotMatch(all, /class="kanban-board"/);
 });
 
-test("status changes stay pending until confirmed and cancellation preserves the ticket", () => {
-  const stored = new Map();
-  const api = loadApp({ getItem: (key) => stored.get(key) || null, setItem: (key, value) => stored.set(key, value) });
+test("status changes stay pending until confirmed and cancellation preserves the ticket", async () => {
+  const api = loadApp();
   api.state.tickets = [{ id: "BV-MOVE", type: "Incidente", status: "Nuevo", resolvedAt: null, reopenedCount: 0, updatedAt: "2026-11-02T12:00:00Z" }];
 
   assert.equal(api.stageStatusChange("BV-MOVE", "En progreso"), true);
@@ -300,18 +311,17 @@ test("status changes stay pending until confirmed and cancellation preserves the
   assert.equal(api.state.tickets[0].status, "Nuevo");
 
   api.stageStatusChange("BV-MOVE", "Resuelto");
-  const changed = api.confirmStatusChange();
+  const changed = await api.confirmStatusChange();
   assert.equal(changed.status, "Resuelto");
   assert.ok(changed.resolvedAt);
-  assert.equal(JSON.parse(stored.get("bevstack-service-desk-v1"))[0].status, "Resuelto");
 });
 
-test("moving a resolved or closed ticket back to work records a reopening", () => {
+test("moving a resolved or closed ticket back to work records a reopening", async () => {
   const api = loadApp();
   api.state.tickets = [{ id: "BV-REOPEN", type: "Incidente", status: "Cerrado", resolvedAt: "2026-11-01T12:00:00Z", reopenedCount: 1 }];
 
   assert.equal(api.stageStatusChange("BV-REOPEN", "En progreso"), true);
-  const changed = api.confirmStatusChange();
+  const changed = await api.confirmStatusChange();
   assert.equal(changed.status, "En progreso");
   assert.equal(changed.resolvedAt, null);
   assert.equal(changed.reopenedCount, 2);
@@ -562,13 +572,9 @@ test("dashboard shows a priority heatmap whose counts include only active ticket
   assert.notEqual(api.priorityHeatColor("P1", 5), api.priorityHeatColor("P2", 5));
 });
 
-test("catalog categories can be added for either ticket type and persist only custom entries", () => {
-  const entries = new Map();
-  const storage = {
-    getItem: (key) => entries.get(key) || null,
-    setItem: (key, value) => entries.set(key, value),
-  };
-  const api = loadApp(storage);
+test("custom categories are validated for either type without browser-local persistence", () => {
+  const entries = [];
+  const api = loadApp({ getItem: (key) => { entries.push(["get", key]); return null; }, setItem: (key) => entries.push(["set", key]) });
   const created = api.addCatalogCategory({
     name: "Revisión de promociones",
     type: "Solicitud",
@@ -577,11 +583,47 @@ test("catalog categories can be added for either ticket type and persist only cu
     owner: "Account Management",
   });
   assert.equal(created.name, "Revisión de promociones");
-  assert.equal(api.catalog.at(-1).type, "Solicitud");
+  assert.equal(created.type, "Solicitud");
+  api.catalog.push(created);
   assert.match(api.renderCatalog(), /Revisión de promociones/);
-  assert.equal(JSON.parse(entries.get("bevstack-service-desk-catalog-v1")).length, 1);
   assert.equal(api.addCatalogCategory({ name: "Revisión de promociones", type: "Solicitud", description: "x", reporter: "x", owner: "x" }), null);
-  assert.match(loadApp(storage).renderCatalog(), /Revisión de promociones/);
+  assert.equal(entries.some(([, key]) => key.includes("catalog-v1")), false);
+});
+
+test("authenticated shared data replaces ticket state and adds shared categories", () => {
+  const accesses = [];
+  const api = loadApp({ getItem: (key) => { accesses.push(["get", key]); return null; }, setItem: (key) => accesses.push(["set", key]) });
+  api.applySharedData({
+    tickets: [{ id: "BV-2050", subject: "Caso compartido", type: "Incidente", status: "Nuevo" }],
+    customCategories: [{ id: "returns", name: "Devoluciones", type: "Incidente", description: "Caso", reporter: "CS", owner: "AM" }],
+  });
+  assert.equal(api.state.tickets[0].id, "BV-2050");
+  assert.equal(api.catalog.at(-1).id, "returns");
+  assert.equal(api.state.dataLoaded, true);
+  assert.equal(accesses.some(([, key]) => key.includes("service-desk-v1") || key.includes("catalog-v1")), false);
+});
+
+test("production bootstrap starts empty and reserves browser storage for problem notes", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  assert.match(source, /tickets:\s*\[\]/);
+  assert.doesNotMatch(source, /\b(?:STORAGE_KEY|CATALOG_STORAGE_KEY|loadTickets|persistCustomCatalog)\b/);
+  assert.match(source, /localStorage\.getItem\(PROBLEM_STORAGE_KEY\)/);
+  assert.match(source, /localStorage\.setItem\(PROBLEM_STORAGE_KEY/);
+});
+
+test("ticket state changes only after the shared repository confirms the update", async () => {
+  const original = { id: "BV-PERSIST", status: "Nuevo", updatedAt: "2026-11-02T12:00:00Z" };
+  const api = loadApp(undefined, { async updateTicket(ticket) { return { ...ticket, status: "En progreso", updatedAt: "2026-11-02T12:05:00Z" }; } });
+  api.state.tickets = [original];
+  const saved = await api.saveTicketDraft(original, { ...original, status: "En progreso" });
+  assert.equal(saved.status, "En progreso");
+  assert.equal(api.state.tickets[0].status, "En progreso");
+
+  const failure = loadApp(undefined, { async updateTicket() { throw new Error("Sin conexión"); } });
+  failure.state.tickets = [original];
+  const rejected = await failure.saveTicketDraft(original, { ...original, status: "Cerrado" });
+  assert.equal(rejected, null);
+  assert.equal(failure.state.tickets[0].status, "Nuevo");
 });
 
 test("category editor exposes the type, explanation, reporter, and first-line owner as required fields", () => {
@@ -641,7 +683,7 @@ test("explains improvement indicators, targets, formulas, data coverage, and unm
   assert.match(html, /No medible aún/);
   assert.match(html, /satisfacción/i);
   assert.match(html, /reaperturas/);
-  assert.match(html, /Muestra de demostración/);
+  assert.match(html, /Datos cargados/);
 });
 
 test("uses the navy, black, white, and cyan brand palette without emoji presentation glyphs", () => {
