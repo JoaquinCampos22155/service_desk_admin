@@ -2,6 +2,7 @@
 
 const STORAGE_KEY = "bevstack-service-desk-v1";
 const PROBLEM_STORAGE_KEY = "bevstack-service-desk-problems-v1";
+const CATALOG_STORAGE_KEY = "bevstack-service-desk-catalog-v1";
 const STATUSES = ["Nuevo", "En triage", "En progreso", "En espera", "Escalado", "Resuelto", "Cerrado"];
 const ASSIGNEES = ["Account Management", "Customer Service", "Team de Tech", "Directora de Tech", "Proveedor externo"];
 const PRIORITY_RULES = {
@@ -14,7 +15,11 @@ const PRIORITY_TARGETS = {
   P2: { response: "1 h", resolution: "24 h" },
   P3: { response: "4 h", resolution: "3 días hábiles" },
 };
-const CATALOG = [
+const DEMO_TICKET_AGE_MINUTES = new Map([
+  ["BV-1048", 35], ["BV-1047", 95], ["BV-1046", 480], ["BV-1045", 1460], ["BV-1044", 2920],
+  ["BV-1043", 4335], ["BV-1042", 5800], ["BV-1041", 7210], ["BV-1040", 8650], ["BV-1039", 8690],
+]);
+const DEFAULT_CATALOG = [
   { id: "new-store", name: "Activación de una nueva tienda", type: "Solicitud", owner: "Account Management", reporter: "Equipo de e-commerce u operaciones de la marca", description: "Incorporar una tienda al servicio y dejarla lista para operar pedidos." },
   { id: "shipping-rules", name: "Cambio en reglas de envío", type: "Solicitud", owner: "Account Management", reporter: "Equipo de e-commerce u operaciones de la marca", description: "Modificar cobertura, tarifas o condiciones de envío de la tienda." },
   { id: "product-config", name: "Actualización de configuración de productos", type: "Solicitud", owner: "Account Management", reporter: "Equipo de e-commerce u operaciones de la marca", description: "Modificar información operativa de productos que afecta su venta o cumplimiento." },
@@ -24,6 +29,47 @@ const CATALOG = [
   { id: "payment-without-order", name: "Pago completado sin creación del pedido", type: "Incidente", owner: "Customer Service / Team de Tech", reporter: "Operaciones, e-commerce o consumidor vía Customer Service", description: "El pago se registró, pero la orden correspondiente no aparece correctamente en la operación." },
   { id: "shipping-unavailable", name: "Opción de envío no disponible", type: "Incidente", owner: "Account Management / Customer Service", reporter: "Operaciones, e-commerce o consumidor vía Customer Service", description: "No se puede utilizar una opción de envío que debería estar habilitada para el pedido." },
 ];
+const CATALOG = [...DEFAULT_CATALOG, ...loadCustomCatalog()];
+
+function loadCustomCatalog() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CATALOG_STORAGE_KEY) || "[]");
+    if (!Array.isArray(saved)) return [];
+    const defaultIds = new Set(DEFAULT_CATALOG.map((item) => item.id));
+    const seenIds = new Set();
+    return saved.filter((item) => {
+      if (!item || typeof item.id !== "string" || !item.id || defaultIds.has(item.id) || seenIds.has(item.id)
+        || !["Solicitud", "Incidente"].includes(item.type)
+        || ![item.name, item.description, item.reporter, item.owner].every((value) => typeof value === "string" && value.trim())) return false;
+      seenIds.add(item.id);
+      return true;
+    });
+  } catch (error) {
+    console.warn("No se pudo leer el catálogo personalizado de la demo.", error);
+    return [];
+  }
+}
+
+function persistCustomCatalog() {
+  const defaultIds = new Set(DEFAULT_CATALOG.map((item) => item.id));
+  localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(CATALOG.filter((item) => !defaultIds.has(item.id))));
+}
+
+function addCatalogCategory(values) {
+  const category = Object.fromEntries(["name", "type", "description", "reporter", "owner"].map((key) => [key, String(values[key] || "").trim()]));
+  if (!category.name || !category.description || !category.reporter || !category.owner || !["Solicitud", "Incidente"].includes(category.type)) return null;
+  const normalizedName = category.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es");
+  if (CATALOG.some((item) => item.type === category.type && item.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es") === normalizedName)) return null;
+  const baseId = slugify(category.name);
+  if (!baseId) return null;
+  let id = baseId;
+  let suffix = 2;
+  while (CATALOG.some((item) => item.id === id)) id = `${baseId}-${suffix++}`;
+  const savedCategory = { id, ...category };
+  CATALOG.push(savedCategory);
+  persistCustomCatalog();
+  return savedCategory;
+}
 
 const state = {
   view: "dashboard",
@@ -39,22 +85,22 @@ const state = {
 const appContent = document.querySelector("#app-content");
 const pageCrumb = document.querySelector("#page-crumb");
 
-function isoAgo(minutes) {
-  return new Date(Date.now() - minutes * 60_000).toISOString();
+function isoAgo(minutes, from = new Date()) {
+  return new Date(from.getTime() - minutes * 60_000).toISOString();
 }
 
 function seedTickets() {
   const seed = [
-    ["BV-1048", "Pago confirmado, pero el pedido no aparece", "payment-without-order", "Incidente", "Alto", "Alta", "En progreso", "Customer Service", "Portal de marca", "Nébula Spirits", "ORD-78421", 32, "El cliente recibió confirmación del cobro. La orden no aparece en el panel de operaciones y hay tres consumidores afectados.", ["Validamos el cobro y estamos revisando la sincronización de órdenes."]],
-    ["BV-1047", "La tienda no procesa pedidos desde esta mañana", "unprocessed-order", "Incidente", "Alto", "Alta", "Escalado", "Team de Tech", "Portal de marca", "Casa Nómada", "", 54, "El flujo de compra falla para varias marcas; el problema empezó después de una actualización del proveedor.", ["AM registró el caso y notificó a Tech. Se abrió seguimiento con el proveedor."]],
-    ["BV-1046", "Agregar cobertura de envío para zona 12", "shipping-rules", "Solicitud", "Medio", "Baja", "En triage", "Account Management", "Portal de marca", "Altura Gin", "", 145, "Solicitamos habilitar la zona 12 a partir del próximo lunes. Las tarifas existentes se mantienen.", ["Recibimos la solicitud. Validaremos la cobertura y la fecha solicitada."]],
-    ["BV-1045", "Disponibilidad de producto no coincide con inventario", "incorrect-inventory", "Incidente", "Medio", "Alta", "En espera", "Team de Tech", "Correo de Customer Service", "Nébula Spirits", "ORD-78396", 205, "El producto aparece disponible en la tienda, pero el retailer reporta inventario agotado.", ["CS confirmó la discrepancia. Estamos esperando la confirmación del feed de inventario."]],
-    ["BV-1044", "Preparar una nueva tienda para el lanzamiento", "new-store", "Solicitud", "Bajo", "Baja", "En progreso", "Account Management", "Portal de marca", "Fuego Norte", "", 370, "Activar la tienda de Fuego Norte antes de la campaña del próximo mes. Credenciales entregadas.", ["Checklist de onboarding iniciado; faltan validar reglas de envío."]],
-    ["BV-1043", "No aparece el envío express en el checkout", "shipping-unavailable", "Incidente", "Medio", "Alta", "Nuevo", "Customer Service", "Correo de Customer Service", "Casa Nómada", "ORD-78122", 520, "Una persona consumidora no puede elegir envío express aunque el destino está dentro de cobertura.", []],
-    ["BV-1042", "Actualizar datos operativos de dos productos", "product-config", "Solicitud", "Bajo", "Media", "Cerrado", "Account Management", "Portal de marca", "Altura Gin", "", 1440, "Actualizar descripción y contenido de dos productos antes de publicarlos.", ["Cambios aplicados y confirmados por la marca."]],
-    ["BV-1041", "Modificar horario de corte de pedidos", "operational-config", "Solicitud", "Medio", "Baja", "Resuelto", "Account Management", "Portal de marca", "Nébula Spirits", "", 1950, "Cambiar el horario operativo de corte de pedidos de lunes a viernes.", ["Se actualizó la configuración y se verificó con la marca."]],
-    ["BV-1040", "Orden cobrada dos veces durante el checkout", "payment-without-order", "Incidente", "Alto", "Media", "En progreso", "Team de Tech", "Correo de Customer Service", "Fuego Norte", "ORD-77804", 2380, "El consumidor reporta dos cargos para una sola compra. CS está coordinando la comunicación.", ["CS solicitó los comprobantes. Tech está revisando los eventos de pago."]],
-    ["BV-1039", "Revisar reglas de envío para temporada alta", "shipping-rules", "Solicitud", "Bajo", "Baja", "Cerrado", "Account Management", "Portal de marca", "Casa Nómada", "", 2870, "Ajuste programado de tarifas para temporada alta, sujeto a aprobación de la marca.", ["Solicitud completada dentro del plazo acordado."]],
+    ["BV-1048", "Pago confirmado, pero el pedido no aparece", "payment-without-order", "Incidente", "Alto", "Alta", "En progreso", "Customer Service", "Portal de marca", "Nébula Spirits", "ORD-78421", 35, "El cliente recibió confirmación del cobro. La orden no aparece en el panel de operaciones y hay tres consumidores afectados.", ["Validamos el cobro y estamos revisando la sincronización de órdenes."]],
+    ["BV-1047", "La tienda no procesa pedidos desde esta mañana", "unprocessed-order", "Incidente", "Alto", "Alta", "Escalado", "Team de Tech", "Portal de marca", "Casa Nómada", "", 95, "El flujo de compra falla para varias marcas; el problema empezó después de una actualización del proveedor.", ["AM registró el caso y notificó a Tech. Se abrió seguimiento con el proveedor."]],
+    ["BV-1046", "Agregar cobertura de envío para zona 12", "shipping-rules", "Solicitud", "Medio", "Baja", "En triage", "Account Management", "Portal de marca", "Altura Gin", "", 480, "Solicitamos habilitar la zona 12 a partir del próximo lunes. Las tarifas existentes se mantienen.", ["Recibimos la solicitud. Validaremos la cobertura y la fecha solicitada."]],
+    ["BV-1045", "Disponibilidad de producto no coincide con inventario", "incorrect-inventory", "Incidente", "Medio", "Alta", "En espera", "Team de Tech", "Correo de Customer Service", "Nébula Spirits", "ORD-78396", 1460, "El producto aparece disponible en la tienda, pero el retailer reporta inventario agotado.", ["CS confirmó la discrepancia. Estamos esperando la confirmación del feed de inventario."]],
+    ["BV-1044", "Preparar una nueva tienda para el lanzamiento", "new-store", "Solicitud", "Bajo", "Baja", "En progreso", "Account Management", "Portal de marca", "Fuego Norte", "", 2920, "Activar la tienda de Fuego Norte antes de la campaña del próximo mes. Credenciales entregadas.", ["Checklist de onboarding iniciado; faltan validar reglas de envío."]],
+    ["BV-1043", "No aparece el envío express en el checkout", "shipping-unavailable", "Incidente", "Medio", "Alta", "Nuevo", "Customer Service", "Correo de Customer Service", "Casa Nómada", "ORD-78122", 4335, "Una persona consumidora no puede elegir envío express aunque el destino está dentro de cobertura.", []],
+    ["BV-1042", "Actualizar datos operativos de dos productos", "product-config", "Solicitud", "Bajo", "Media", "Cerrado", "Account Management", "Portal de marca", "Altura Gin", "", 5800, "Actualizar descripción y contenido de dos productos antes de publicarlos.", ["Cambios aplicados y confirmados por la marca."]],
+    ["BV-1041", "Modificar horario de corte de pedidos", "operational-config", "Solicitud", "Medio", "Baja", "Resuelto", "Account Management", "Portal de marca", "Nébula Spirits", "", 7210, "Cambiar el horario operativo de corte de pedidos de lunes a viernes.", ["Se actualizó la configuración y se verificó con la marca."]],
+    ["BV-1040", "Orden cobrada dos veces durante el checkout", "payment-without-order", "Incidente", "Alto", "Media", "En progreso", "Team de Tech", "Correo de Customer Service", "Fuego Norte", "ORD-77804", 8650, "El consumidor reporta dos cargos para una sola compra. CS está coordinando la comunicación.", ["CS solicitó los comprobantes. Tech está revisando los eventos de pago."]],
+    ["BV-1039", "Revisar reglas de envío para temporada alta", "shipping-rules", "Solicitud", "Bajo", "Baja", "Cerrado", "Account Management", "Portal de marca", "Casa Nómada", "", 8690, "Ajuste programado de tarifas para temporada alta, sujeto a aprobación de la marca.", ["Solicitud completada dentro del plazo acordado."]],
   ];
   return seed.map((row, index) => ({
     id: row[0], subject: row[1], categoryId: row[2], type: row[3], impact: row[4], urgency: row[5], priority: PRIORITY_RULES[row[4]][row[5]], status: row[6], assignee: row[7], communicationOwner: row[8].includes("Customer Service") ? "Customer Service" : "Account Management", channel: row[8], brand: row[9], orderId: row[10], createdAt: isoAgo(row[11]), updatedAt: isoAgo(Math.max(5, row[11] - 10)), description: row[12], requesterType: row[8].includes("Customer Service") ? "Consumidor" : "Marca", requesterName: row[8].includes("Customer Service") ? "Persona consumidora" : `Equipo de ${row[9]}`, requesterEmail: row[8].includes("Customer Service") ? "consumidor@example.com" : `operaciones@${slugify(row[9])}.com`, comments: row[13].map((content, commentIndex) => ({ id: `${row[0]}-C${commentIndex}`, author: row[8].includes("Customer Service") ? "Customer Service" : "Account Management", body: content, visibility: "Público", createdAt: isoAgo(Math.max(1, row[11] - 8)) })), firstResponseAt: index < 8 ? isoAgo(Math.max(1, row[11] - 8)) : null, resolvedAt: ["Resuelto", "Cerrado"].includes(row[6]) ? isoAgo(Math.max(1, row[11] - 3)) : null, reopenedCount: 0 }));
@@ -65,7 +111,11 @@ function loadTickets() {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        const refreshed = refreshStaleDemoDates(parsed);
+        if (refreshed !== parsed) localStorage.setItem(STORAGE_KEY, JSON.stringify(refreshed));
+        return refreshed;
+      }
     }
   } catch (error) {
     console.warn("No se pudo leer el almacenamiento local de la demo.", error);
@@ -73,6 +123,33 @@ function loadTickets() {
   const seeded = seedTickets();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
   return seeded;
+}
+
+function refreshStaleDemoDates(tickets, now = new Date()) {
+  const firstVisibleDay = new Date(now);
+  firstVisibleDay.setHours(0, 0, 0, 0);
+  firstVisibleDay.setDate(firstVisibleDay.getDate() - 6);
+  const sampleIsStale = tickets.some((ticket) => {
+    if (!DEMO_TICKET_AGE_MINUTES.has(ticket.id)) return false;
+    const createdAt = new Date(ticket.createdAt);
+    return !Number.isFinite(createdAt.getTime()) || createdAt < firstVisibleDay;
+  });
+  if (!sampleIsStale) return tickets;
+  return tickets.map((ticket) => {
+    const ageMinutes = DEMO_TICKET_AGE_MINUTES.get(ticket.id);
+    if (ageMinutes === undefined) return ticket;
+    const next = {
+      ...ticket,
+      createdAt: isoAgo(ageMinutes, now),
+      updatedAt: isoAgo(Math.max(5, ageMinutes - 10), now),
+    };
+    if (Array.isArray(ticket.comments)) {
+      next.comments = ticket.comments.map((comment) => ({ ...comment, createdAt: isoAgo(Math.max(1, ageMinutes - 8), now) }));
+    }
+    if (ticket.firstResponseAt) next.firstResponseAt = isoAgo(Math.max(1, ageMinutes - 8), now);
+    if (ticket.resolvedAt) next.resolvedAt = isoAgo(Math.max(1, ageMinutes - 3), now);
+    return next;
+  });
 }
 
 function loadProblemRecords() {
@@ -366,25 +443,23 @@ function renderDashboard() {
   const requests = active.filter((ticket) => ticket.type === "Solicitud");
   const open = sortedTickets(active).slice(0, 5);
   const intake = buildTicketIntakeTrend(state.tickets);
-  const responseMetrics = responseMetricsByPriority(state.tickets);
-  const aging = activeTicketAgingBuckets(state.tickets);
   const intakeMax = Math.max(1, ...intake.map((day) => day.incidents + day.requests));
-  const agingMax = Math.max(1, ...aging.map((bucket) => bucket.total));
+  const categoryCounts = ticketCountsByCategory(state.tickets).filter((item) => item.total > 0);
+  const categoryMax = Math.max(1, ...categoryCounts.map((item) => item.total));
   const requesterCounts = {
     Marca: state.tickets.filter((ticket) => requesterOrigin(ticket) === "Marca").length,
     Consumidor: state.tickets.filter((ticket) => requesterOrigin(ticket) === "Consumidor").length,
   };
   const activePriorityCounts = Object.fromEntries(["P1", "P2", "P3"].map((priority) => [priority, active.filter((ticket) => ticket.priority === priority).length]));
-  const priorityMax = Math.max(1, ...Object.values(activePriorityCounts));
   return `
-    <div class="page-heading"><div><div class="eyebrow">Vista de operación · ${formatDate(new Date().toISOString(), { year: "numeric" })}</div><h1>Buenos días, equipo</h1><p class="page-subtitle">Una vista clara de lo que necesita atención y quién lo está atendiendo.</p></div><button class="primary-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
+    <div class="page-heading"><div><h1>Buenos días, equipo</h1><p class="page-subtitle">Una vista clara de lo que necesita atención y quién lo está atendiendo.</p></div><button class="primary-button create-ticket-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
     <section class="metric-grid" aria-label="Resumen de tickets">
       ${metricCard("Tickets activos", active.length, "Casos pendientes de atención", "▤", "green")}
       ${metricCard("Incidentes", incidents.length, "Cola de restauración", "◉", "red")}
       ${metricCard("Solicitudes", requests.length, "Cola de cumplimiento", "◇", "amber")}
     </section>
     <section class="dashboard-grid">
-      <div class="panel"><div class="panel-heading"><div><h2>Entrada diaria de tickets</h2><p>Últimos 7 días · permite detectar aumentos de demanda y separar interrupciones de solicitudes planificadas.</p></div><div class="chart-legend intake-legend"><span><i class="legend-dot intake-incident"></i>Incidente</span><span><i class="legend-dot intake-request"></i>Solicitud</span></div></div>
+      <div class="panel intake-panel"><div class="panel-heading"><div><h2>Entrada diaria de tickets</h2><p>Últimos 7 días · permite detectar aumentos de demanda y separar interrupciones de solicitudes planificadas.</p></div><div class="chart-legend intake-legend"><span><i class="legend-dot intake-incident"></i>Incidente</span><span><i class="legend-dot intake-request"></i>Solicitud</span></div></div>
         <div class="intake-chart" role="img" aria-label="Tickets creados por día durante los últimos siete días, separados entre incidentes y solicitudes">${intake.map((day) => { const total = day.incidents + day.requests; return `<div class="intake-day"><div class="intake-value">${total || ""}</div><div class="intake-column" title="${day.incidents} incidentes, ${day.requests} solicitudes"><i class="intake-incident" style="height:${day.incidents / intakeMax * 100}%"></i><i class="intake-request" style="height:${day.requests / intakeMax * 100}%"></i></div><span>${escapeHTML(day.label)}</span></div>`; }).join("")}</div>
         <p class="chart-decision"><strong>Decisión:</strong> si la entrada crece varios días, revisar capacidad de AM/CS y las categorías que impulsan el aumento en Análisis de problemas.</p>
       </div>
@@ -392,26 +467,51 @@ function renderDashboard() {
         <div class="priority-list">${open.length ? open.map((ticket) => `<div class="priority-item" data-ticket-id="${escapeHTML(ticket.id)}"> <span class="priority-number ${ticket.priority.toLowerCase()}">${escapeHTML(ticket.priority)}</span><span class="priority-copy"><strong>${escapeHTML(ticket.subject)}</strong><small>${escapeHTML(ticket.brand)} · ${escapeHTML(ticket.assignee)}</small></span><span class="priority-age">${timeAgo(ticket.createdAt)}</span></div>`).join("") : `<div class="empty-state"><strong>Todo al día</strong>No hay casos pendientes de atención.</div>`}</div>
       </div>
     </section>
-    <section class="monitoring-grid" aria-label="Indicadores de respuesta y antigüedad de la cola">
-      <div class="panel response-panel"><div class="panel-heading"><div><h2>Primera respuesta por prioridad</h2><p>Minutos hábiles · lunes a viernes, 09:00–18:00 America/New_York · objetivo interno ≥95% dentro del SLO.</p></div></div>
-        <div class="response-table" role="table" aria-label="Percentiles de primera respuesta por prioridad">${["P1", "P2", "P3"].map((priority) => { const metric = responseMetrics[priority]; const scale = metric.p95 === null ? 0 : Math.min(100, metric.p95 / (metric.targetMinutes * 2) * 100); return `<div class="response-row ${priority.toLowerCase()}" role="row"><strong>${priority}</strong><span class="response-target">Meta ${metric.targetMinutes} min</span><div class="response-track" role="img" aria-label="${priority}: p95 ${metric.p95 === null ? "sin datos" : `${metric.p95} minutos`}, objetivo ${metric.targetMinutes} minutos"><i style="width:${scale}%"></i><b style="left:50%"></b></div><span class="response-percentiles">p50 <strong>${metric.p50 === null ? "—" : `${metric.p50}m`}</strong><br>p95 <strong>${metric.p95 === null ? "—" : `${metric.p95}m`}</strong></span><span class="response-attainment">${metric.attainment === null ? "Sin muestra" : `${metric.attainment}%`}<small>${metric.withinTarget}/${metric.count} en meta</small></span></div>`; }).join("")}</div>
-        <p class="chart-decision"><strong>Decisión:</strong> atender primero la prioridad cuyo p95 rebase su meta. La muestra es de demostración; con pocos casos el percentil es orientativo.</p>
-      </div>
-      <div class="panel aging-panel"><div class="panel-heading"><div><h2>Antigüedad de la cola activa</h2><p>Tiempo corrido desde creación · instantánea al abrir el tablero.</p></div></div>
-        <div class="aging-chart" role="img" aria-label="Tickets activos agrupados por tiempo corrido desde creación y desglosados por prioridad">${aging.map((bucket) => `<div class="aging-row"><span>${bucket.label}</span><div class="aging-track">${["P1", "P2", "P3"].map((priority) => `<i class="aging-${priority.toLowerCase()}" style="width:${bucket[priority] / agingMax * 100}%" title="${priority}: ${bucket[priority]}"></i>`).join("")}</div><strong>${bucket.total}</strong></div>`).join("")}</div>
-        <div class="chart-legend aging-legend"><span><i class="legend-dot aging-p1"></i>P1</span><span><i class="legend-dot aging-p2"></i>P2</span><span><i class="legend-dot aging-p3"></i>P3</span></div>
-        <p class="chart-caveat">Tiempo corrido no equivale por sí solo a incumplimiento de SLO. Revisar primero casos P1/P2 envejecidos y confirmar estado, bloqueos y próxima actualización.</p>
-      </div>
+    <section class="panel category-summary-panel"><div class="panel-heading"><div><h2>Tickets por categoría</h2><p>Volumen de todo el registro · compara incidentes con solicitudes para mostrar qué tipo de trabajo concentra cada tema.</p></div><div class="chart-legend"><span><i class="legend-dot"></i>Incidente</span><span><i class="legend-dot request"></i>Solicitud</span></div></div>
+      ${categoryCounts.length ? `<div class="category-chart" role="img" aria-label="Tickets del registro agrupados por categoría y separados entre incidentes y solicitudes">${categoryCounts.map((item) => { const scale = item.total / categoryMax * 100; const incidentWidth = item.total ? item.incidents / item.total * 100 : 0; const requestWidth = item.total ? item.requests / item.total * 100 : 0; return `<div class="chart-row"><span class="chart-label" title="${escapeHTML(item.category.name)}">${escapeHTML(item.category.name)}</span><div class="chart-track"><div class="chart-bar" style="width:${scale}%"><span class="incident-part" style="width:${incidentWidth}%"></span><span class="request-part" style="width:${requestWidth}%"></span></div></div><span class="chart-value">${item.total}</span></div>`; }).join("")}</div>` : `<div class="chart-empty">Aún no hay tickets registrados.</div>`}
+      <p class="chart-decision"><strong>Cómo usarlo:</strong> identifica las categorías con más volumen y revisa en Análisis de problemas si se repiten por prioridad, marca o reapertura.</p>
     </section>
     <section class="insight-grid" aria-label="Origen y prioridad de los tickets">
       <div class="panel insight-panel origin-insight"><div class="panel-heading"><div><h2>Origen de los tickets</h2><p>Todos los casos registrados; permite distinguir demanda de marcas y consumidores.</p></div><span class="insight-tag">${state.tickets.length} total</span></div>
         <div class="breakdown-list">${[["Marca", "Marcas", "brand"], ["Consumidor", "Consumidores", "consumer"]].map(([origin, label, tone]) => `<div class="breakdown-row ${tone}"><span>${label}</span><strong>${requesterCounts[origin]}</strong><div class="breakdown-track" aria-hidden="true"><i style="width:${state.tickets.length ? requesterCounts[origin] / state.tickets.length * 100 : 0}%"></i></div></div>`).join("")}</div>
       </div>
-      <div class="panel insight-panel priority-insight"><div class="panel-heading"><div><h2>Prioridad de la cola activa</h2><p>Solo tickets pendientes; Resuelto y Cerrado no entran en esta distribución.</p></div><span class="insight-tag">${active.length} activos</span></div>
-        <div class="breakdown-list">${["P1", "P2", "P3"].map((priority) => `<div class="breakdown-row ${priority.toLowerCase()}"><span>${priority}</span><strong>${activePriorityCounts[priority]}</strong><div class="breakdown-track" aria-hidden="true"><i style="width:${activePriorityCounts[priority] / priorityMax * 100}%"></i></div></div>`).join("")}</div>
+      <div class="panel insight-panel priority-insight"><div class="panel-heading"><div><h2>Prioridad de la cola activa</h2><p>El color indica prioridad; la intensidad, cantidad de casos (escala 0–10+).</p></div><span class="insight-tag">${active.length} activos</span></div>
+        <div class="priority-heatmap" role="group" aria-label="Mapa de calor de prioridad">${["P1", "P2", "P3"].map((priority) => { const count = activePriorityCounts[priority]; const intensity = Math.min(10, Math.max(0, count)); return `<div class="priority-heat-cell ${intensity >= 7 ? "heat-dark" : ""}" style="background-color:${priorityHeatColor(priority, count)};border-color:${priorityHeatColor(priority, count)}" role="group" aria-label="Prioridad ${priority}: ${count} ${count === 1 ? "ticket activo" : "tickets activos"}"><span class="priority-pill ${priority.toLowerCase()}">${priority}</span><strong>${count}</strong><span>${count === 1 ? "ticket activo" : "tickets activos"}</span></div>`; }).join("")}</div>
+        <div class="heatmap-scale"><span>P1 rojo</span><span>P2 ámbar</span><span>P3 verde</span><span>Más intenso = más tickets</span></div>
       </div>
     </section>
     <aside class="dashboard-guidance" aria-label="Modelo de atención"><div><strong>Modelo de atención</strong><p>Las marcas envían tickets; Customer Service registra los casos de consumidores. Account Management y Customer Service comunican avances mientras Tech o el proveedor investiga. Incidente = restaurar; solicitud = cumplir.</p></div><button class="panel-action" data-view="catalog">Ver catálogo →</button></aside>`;
+}
+
+function heatLevel(count, max) {
+  if (!count || !max) return "heat-0";
+  return `heat-${Math.max(1, Math.ceil(count / max * 4))}`;
+}
+
+function priorityHeatColor(priority, count) {
+  const palette = {
+    P1: ["#fff0ef", "#a51e1e"],
+    P2: ["#fff4db", "#9a5100"],
+    P3: ["#e9f8ef", "#206b41"],
+  };
+  const [light, dark] = palette[priority] || palette.P3;
+  const amount = Math.min(10, Math.max(0, Number(count) || 0)) / 10;
+  const channels = (color) => color.match(/[\da-f]{2}/gi).map((channel) => parseInt(channel, 16));
+  const start = channels(light);
+  const end = channels(dark);
+  const result = start.map((channel, index) => Math.round(channel + (end[index] - channel) * amount));
+  return `#${result.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function selectQueueView(type) {
+  const viewByType = { Todos: "tickets", Incidente: "incidents", Solicitud: "requests" };
+  if (!viewByType[type]) return;
+  state.typeFilter = type;
+  state.view = viewByType[type];
+  state.search = "";
+  state.statusFilter = "Todos los estados";
+  state.priorityFilter = "Todas las prioridades";
+  render();
 }
 
 function metricCard(label, value, foot, icon, color) {
@@ -428,13 +528,13 @@ function renderTicketQueue() {
   }));
   const pageTitle = state.view === "incidents" ? "Incidentes" : state.view === "requests" ? "Solicitudes de servicio" : "Todos los tickets";
   const subtitle = state.view === "incidents" ? "Restaurar una operación interrumpida o degradada." : state.view === "requests" ? "Cumplir acciones acordadas, repetibles y planificables." : "El registro único del Service Desk, organizado en colas distintas.";
-  const counts = { all: base.length, incidents: base.filter((ticket) => ticket.type === "Incidente").length, requests: base.filter((ticket) => ticket.type === "Solicitud").length };
+  const counts = { all: state.tickets.length, incidents: state.tickets.filter((ticket) => ticket.type === "Incidente").length, requests: state.tickets.filter((ticket) => ticket.type === "Solicitud").length };
   const statusCounts = {
     active: state.tickets.filter((ticket) => !["Resuelto", "Cerrado"].includes(ticket.status)).length,
     resolved: state.tickets.filter((ticket) => ticket.status === "Resuelto").length,
     closed: state.tickets.filter((ticket) => ticket.status === "Cerrado").length,
   };
-  return `<div class="page-heading"><div><div class="eyebrow">Operación · Bandeja de trabajo</div><h1>${pageTitle}</h1><p class="page-subtitle">${subtitle}</p></div><button class="primary-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
+  return `<div class="page-heading"><div><h1>${pageTitle}</h1><p class="page-subtitle">${subtitle}</p></div><button class="primary-button create-ticket-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
     ${state.view === "tickets" ? `<section class="status-overview" aria-label="Estado de todos los tickets"><div class="status-overview-heading"><h2>Estado de todos los tickets</h2><span>Conteos globales · no cambian con los filtros</span></div><div class="status-overview-grid"><div class="status-total active"><span>Activos</span><strong>${statusCounts.active}</strong></div><div class="status-total resolved"><span>Resueltos</span><strong>${statusCounts.resolved}</strong></div><div class="status-total closed"><span>Cerrados</span><strong>${statusCounts.closed}</strong></div></div><p class="status-definitions"><span><strong>Resuelto</strong> significa solución aplicada, pendiente de confirmación o cierre.</span><span><strong>Cerrado</strong> significa caso validado y finalizado.</span></p></section>` : ""}
     <section class="ticket-panel"><div class="ticket-panel-head"><div><h2>Registro de casos</h2><p>Ordenado por prioridad; P1 aparece antes que P2 y P3.</p></div><div class="table-tools"><label class="search-box"><span class="sr-only">Buscar tickets</span><input id="ticket-search" type="search" placeholder="Buscar por ticket, marca o pedido" value="${escapeHTML(state.search)}" /></label><select class="filter-select" id="priority-filter" aria-label="Filtrar por prioridad"><option ${state.priorityFilter === "Todas las prioridades" ? "selected" : ""}>Todas las prioridades</option>${["P1", "P2", "P3"].map((priority) => `<option ${state.priorityFilter === priority ? "selected" : ""}>${priority}</option>`).join("")}</select><select class="filter-select" id="status-filter" aria-label="Filtrar por estado"><option ${state.statusFilter === "Todos los estados" ? "selected" : ""}>Todos los estados</option>${STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}</select></div></div>
     <div class="queue-tabs" role="tablist"><button class="queue-tab ${selectedType === "Todos" ? "active" : ""}" data-type-filter="Todos">Todos<span>${counts.all}</span></button><button class="queue-tab ${selectedType === "Incidente" ? "active" : ""}" data-type-filter="Incidente">Incidentes<span>${counts.incidents}</span></button><button class="queue-tab ${selectedType === "Solicitud" ? "active" : ""}" data-type-filter="Solicitud">Solicitudes<span>${counts.requests}</span></button></div>
@@ -450,7 +550,7 @@ function ticketRow(ticket) {
 function renderCatalog() {
   const requests = CATALOG.filter((item) => item.type === "Solicitud");
   const incidents = CATALOG.filter((item) => item.type === "Incidente");
-  return `<div class="page-heading"><div><div class="eyebrow">Gestión del servicio · 8 elementos</div><h1>Catálogo del servicio</h1><p class="page-subtitle">Qué puede solicitar o reportar cada usuario y quién lo atiende.</p></div><button class="primary-button" data-action="new-ticket"><span>＋</span> Crear ticket</button></div>
+  return `<div class="page-heading"><div><h1>Catálogo del servicio</h1><p class="page-subtitle">Qué puede solicitar o reportar cada usuario y quién lo atiende.</p></div><button class="primary-button create-ticket-button" data-action="new-category"><span>＋</span> Agregar categoría</button></div>
     <div class="section-note"><strong>Un punto de contacto:</strong> las marcas usan Account Management; Customer Service registra los casos de consumidores recibidos por los canales de la marca. Toda la demanda termina en el mismo registro.</div>
     <div class="panel-heading"><div><h2>Solicitudes de servicio <span class="nav-count">${requests.length}</span></h2><p>Acciones previstas: el objetivo es cumplirlas dentro del plazo acordado.</p></div></div><div class="catalog-grid">${requests.map(catalogCard).join("")}</div>
     <div class="panel-heading" style="margin-top:25px"><div><h2>Incidentes <span class="nav-count">${incidents.length}</span></h2><p>Fallas no planificadas: el objetivo es restaurar el servicio afectado.</p></div></div><div class="catalog-grid">${incidents.map(catalogCard).join("")}</div>`;
@@ -466,7 +566,7 @@ function renderProblems() {
   const totalIncidents = patterns.reduce((total, pattern) => total + pattern.count, 0);
   const ticketCategoryCounts = ticketCountsByCategory(state.tickets);
   const ticketCategoryMax = Math.max(1, ...ticketCategoryCounts.map((item) => item.total));
-  return `<div class="page-heading"><div><div class="eyebrow">Mejora continua · análisis basado en tickets</div><h1>Análisis de problemas</h1><p class="page-subtitle">Agrupa incidentes por categoría, enlaza sus casos y documenta la investigación de recurrencias.</p></div><button class="primary-button" data-view="incidents">Abrir cola de incidentes →</button></div>
+  return `<div class="page-heading"><div><h1>Análisis de problemas</h1><p class="page-subtitle">Agrupa incidentes por categoría, enlaza sus casos y documenta la investigación de recurrencias.</p></div><button class="primary-button" data-view="incidents">Abrir cola de incidentes →</button></div>
     <div class="section-note"><strong>Lectura responsable:</strong> el patrón por categoría es una señal para investigar, no una causa raíz confirmada. Orden provisional: prioridad, marcas afectadas, reaperturas y volumen. Un patrón con dos o más incidentes o algún P1 se marca para investigación; ambos criterios deben validarse con Bevstack.</div>
     <section class="metric-grid" aria-label="Resumen del análisis de problemas">
       ${metricCard("Incidentes analizados", totalIncidents, "Todos los incidentes registrados", "◉", "red")}
@@ -495,13 +595,13 @@ function renderServiceLevels() {
   const terminal = state.tickets.filter((ticket) => ["Resuelto", "Cerrado"].includes(ticket.status));
   const resolvedWithTime = terminal.filter((ticket) => ticket.resolvedAt).length;
   const reopened = terminal.filter((ticket) => Number(ticket.reopenedCount || 0) > 0).length;
-  return `<div class="page-heading"><div><div class="eyebrow">Gestión del servicio · Objetivos medibles</div><h1>Niveles de servicio</h1><p class="page-subtitle">Metas visibles para las marcas y acuerdos internos que permiten cumplirlas.</p></div></div>
+  return `<div class="page-heading"><div><h1>Niveles de servicio</h1><p class="page-subtitle">Metas visibles para las marcas y acuerdos internos que permiten cumplirlas.</p></div></div>
     <div class="section-note"><strong>Distinción para esta demo:</strong> la Fase 1 fija metas mensuales de desempeño de 95%. Como no define una consecuencia contractual por incumplimiento, aquí se presentan como <strong>SLO internos</strong>. Un SLA formal con la marca requiere acordar la consecuencia.</div>
-    <section class="levels-grid"><div class="panel levels-targets"><div class="panel-heading"><div><h2>Metas por prioridad</h2><p>Ventana de medición del SLO: mensual, según prioridad.</p></div><span class="section-marker blue">SLO</span></div><table class="sla-table"><thead><tr><th>Prioridad</th><th>Primera respuesta</th><th>Restaurar incidente</th><th>Cumplir solicitud</th></tr></thead><tbody>${priorityRows}</tbody></table><div class="service-window"><span class="service-window-icon">◷</span><div><strong>Horario de atención</strong><br/>Lunes a viernes, 9:00 a. m. a 6:00 p. m., hora del Este de EE. UU. Fuera de horario se escala la afectación crítica.</div></div><div class="info-banner"><strong>Cómo leer la meta:</strong> cada SLO se evalúa mensualmente; el objetivo es cumplir al menos 95% de los casos elegibles. Incidente mide restauración del servicio; solicitud mide entrega de la acción solicitada.</div></div>
+    <section class="levels-grid"><div class="panel levels-targets"><div class="panel-heading"><div><h2>Metas por prioridad</h2><p>Ventana de medición del SLO: mensual, según prioridad.</p></div><span class="section-marker blue">SLO</span></div><div class="sla-table-wrap" role="region" aria-label="Metas por prioridad, desplazable horizontalmente"><table class="sla-table"><thead><tr><th>Prioridad</th><th>Primera respuesta</th><th>Restaurar incidente</th><th>Cumplir solicitud</th></tr></thead><tbody>${priorityRows}</tbody></table></div><div class="service-window"><span class="service-window-icon">◷</span><div><strong>Horario de atención</strong><br/>Lunes a viernes, 9:00 a. m. a 6:00 p. m., hora del Este de EE. UU. Fuera de horario se escala la afectación crítica.</div></div><div class="info-banner"><strong>Cómo leer la meta:</strong> cada SLO se evalúa mensualmente; el objetivo es cumplir al menos 95% de los casos elegibles. Incidente mide restauración del servicio; solicitud mide entrega de la acción solicitada.</div></div>
       <div class="panel levels-chain"><div class="panel-heading"><div><h2>Acuerdos internos (OLA)</h2><p>Los tiempos internos sostienen la meta de cara a la marca.</p></div><span class="section-marker cyan">OLA</span></div><div class="sla-chain"><div class="chain-row"><strong>Account Management / Customer Service</strong><span class="chain-arrow">→</span><span>Registrar y asignar<br/><b>P1 10 min · P2 30 min · P3 1 h</b></span></div><div class="chain-row"><strong>Team de Tech</strong><span class="chain-arrow">→</span><span>Iniciar revisión<br/><b>P1 15 min · P2 1 h · P3 4 h</b></span></div><div class="chain-row"><strong>Directora de Tech</strong><span class="chain-arrow">→</span><span>Revisar escalación crítica<br/><b>Máximo 30 min</b></span></div><div class="chain-row"><strong>Developer externo</strong><span class="chain-arrow">→</span><span>Confirmar recepción<br/><b>Máximo 2 h cuando aplique</b></span></div></div><div class="info-banner"><strong>Dependencia externa:</strong> validar el compromiso del proveedor (UC) y que el recorrido completo deje margen para cumplir la meta al usuario.</div></div>
     </section>
     <section class="panel escalation-panel"><div class="panel-heading"><div><h2>Escalamiento y comunicación</h2><p>Escalar cambia quién resuelve; no quién mantiene informado al usuario.</p></div></div><div class="escalation-grid"><div class="escalation-route functional"><span>Funcional · conocimiento técnico</span><strong>N1 AM/CS <i>→</i> N2 Tech <i>→</i> N3 proveedor</strong></div><div class="escalation-route hierarchical"><span>Jerárquico · autoridad o recursos</span><strong>Tech Lead <i>→</i> dirección / CEO</strong></div><div class="escalation-route communication"><span>Comunicación visible al usuario</span><strong>AM para marcas · CS para consumidores</strong></div></div></section>
-    <section class="improvement-section"><div class="panel-heading"><div><div class="eyebrow">Revisión mensual · ciclo de mejora</div><h2>Indicadores de mejora</h2><p>Qué se mide, cómo se calcula, qué meta aplica y qué información falta para tomar decisiones.</p></div><span class="section-marker navy">SLI / SLO</span></div>
+    <section class="improvement-section"><div class="panel-heading"><div><h2>Indicadores de mejora</h2><p>Qué se mide, cómo se calcula, qué meta aplica y qué información falta para tomar decisiones.</p></div><span class="section-marker navy">SLI / SLO</span></div>
       <div class="indicator-grid">
         <article class="indicator-card response-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · experiencia</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Primera respuesta dentro del objetivo</h3><p>Casos dentro del objetivo ÷ casos con respuesta registrada. Segmentar por prioridad, marca y origen.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${responded} de ${state.tickets.length} tickets tienen primera respuesta registrada.</span></div></article>
         <article class="indicator-card resolution-indicator"><div class="indicator-top"><span class="indicator-kind">SLO · resultado</span><span class="indicator-target">Meta ≥ 95%</span></div><h3>Restauración o cumplimiento en plazo</h3><p>Casos resueltos dentro del objetivo ÷ casos resueltos elegibles. Incidentes restaurados; solicitudes cumplidas.</p><div class="indicator-evidence"><strong>Cobertura de la demo</strong><span>${resolvedWithTime} de ${terminal.length} tickets resueltos/cerrados tienen fecha de resolución.</span></div></article>
@@ -523,20 +623,55 @@ function showToast(message, type = "success") {
   setTimeout(() => toast.remove(), 3300);
 }
 
-function dialogMarkup(title, subtitle, body, footer = "", wide = false) {
-  return `<div class="modal-backdrop" data-action="backdrop-close"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><header class="modal-header"><div><h2>${escapeHTML(title)}</h2><p>${escapeHTML(subtitle)}</p></div><button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button></header><div class="modal-body">${body}</div>${footer ? `<footer class="modal-footer">${footer}</footer>` : ""}</section></div>`;
+function dialogMarkup(title, subtitle, body, footer = "", wide = false, modalClass = "") {
+  return `<div class="modal-backdrop" data-action="backdrop-close"><section class="modal ${wide ? "wide" : ""} ${modalClass}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><header class="modal-header"><div><h2>${escapeHTML(title)}</h2><p>${escapeHTML(subtitle)}</p></div><button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button></header><div class="modal-body">${body}</div>${footer ? `<footer class="modal-footer">${footer}</footer>` : ""}</section></div>`;
 }
 
 function openCreateDialog() {
   const modalHost = document.createElement("div");
   modalHost.id = "modal-host";
-  modalHost.innerHTML = dialogMarkup("Crear ticket", "La marca ingresa por el portal; Customer Service registra los casos que recibe de consumidores.", createFormMarkup(), `<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" type="submit" form="ticket-form">Crear ticket</button>`);
+  modalHost.innerHTML = dialogMarkup("Crear ticket", "Registra la solicitud de una marca o el caso que Customer Service recibe de un consumidor.", createFormMarkup(), `<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" type="submit" form="ticket-form">Crear ticket</button>`, true, "create-ticket-modal");
   document.body.append(modalHost);
   const form = modalHost.querySelector("#ticket-form");
   bindCreateForm(form);
   form.querySelector("#ticket-type").dispatchEvent(new Event("change"));
   form.querySelector("#ticket-impact").dispatchEvent(new Event("change"));
   form.querySelector("#ticket-subject").focus();
+}
+
+function categoryFormMarkup() {
+  return `<form id="category-form" class="create-ticket-form"><p class="form-instructions">Define la categoría que el equipo verá en el catálogo y podrá asignar a nuevos tickets.</p>
+    <fieldset class="form-section"><legend>Información de la categoría</legend><div class="form-grid">
+      <div class="field"><label for="category-type">Tipo de atención <span class="required">*</span></label><select id="category-type" name="type" required><option value="Solicitud">Solicitud</option><option value="Incidente">Incidente</option></select><small>Solicitud = cumplir una acción. Incidente = restaurar el servicio.</small></div>
+      <div class="field"><label for="category-name">Nombre de categoría <span class="required">*</span></label><input id="category-name" name="name" required maxlength="80" placeholder="Ej. Integración de inventario" /></div>
+      <div class="field full"><label for="category-description">Descripción y alcance <span class="required">*</span></label><textarea id="category-description" name="description" required maxlength="300" placeholder="¿Qué necesidad o falla cubre esta categoría?"></textarea></div>
+      <div class="field"><label for="category-reporter">Quién puede reportarla <span class="required">*</span></label><input id="category-reporter" name="reporter" required maxlength="120" placeholder="Ej. Operaciones de la marca" /></div>
+      <div class="field"><label for="category-owner">Primera atención <span class="required">*</span></label><input id="category-owner" name="owner" required maxlength="100" placeholder="Ej. Account Management" /></div>
+      <p id="category-error" class="form-error full" role="alert" hidden></p>
+    </div></fieldset></form>`;
+}
+
+function openCategoryDialog() {
+  const modalHost = document.createElement("div");
+  modalHost.id = "modal-host";
+  modalHost.innerHTML = dialogMarkup("Agregar categoría", "Los campos obligatorios se mostrarán también al crear tickets.", categoryFormMarkup(), `<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" type="submit" form="category-form">Guardar categoría</button>`, true, "category-editor-modal");
+  document.body.append(modalHost);
+  const form = modalHost.querySelector("#category-form");
+  form.querySelector("#category-name").focus();
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(form).entries());
+    const category = addCatalogCategory(values);
+    if (!category) {
+      const error = form.querySelector("#category-error");
+      error.hidden = false;
+      error.textContent = "Completa todos los campos y verifica que no exista otra categoría con el mismo nombre y tipo.";
+      return;
+    }
+    closeModal();
+    render();
+    showToast(`Categoría “${category.name}” agregada al catálogo.`);
+  });
 }
 
 function openProblemDialog(categoryId) {
@@ -561,7 +696,29 @@ function openProblemDialog(categoryId) {
 }
 
 function createFormMarkup() {
-  return `<form id="ticket-form"><div class="form-grid"><div class="field"><label for="ticket-type">Tipo de demanda <span class="required">*</span></label><select id="ticket-type" name="type" required><option value="Incidente">Incidente</option><option value="Solicitud">Solicitud</option></select><small>Incidente = restaurar. Solicitud = cumplir una acción prevista.</small></div><div class="field"><label for="ticket-requester-type">Quién reporta <span class="required">*</span></label><select id="ticket-requester-type" name="requesterType" required><option value="Marca">Marca</option><option value="Consumidor">Consumidor</option></select></div><div class="field"><label for="ticket-category">Categoría del catálogo <span class="required">*</span></label><select id="ticket-category" name="categoryId" required></select></div><div class="field"><label for="ticket-brand">Marca <span class="required">*</span></label><input id="ticket-brand" name="brand" required placeholder="Ej. Nébula Spirits" /></div><div class="field"><label for="ticket-requester">Nombre de quien reporta <span class="required">*</span></label><input id="ticket-requester" name="requesterName" required placeholder="Nombre y equipo" /></div><div class="field"><label for="ticket-email">Correo de contacto</label><input id="ticket-email" name="requesterEmail" type="email" placeholder="nombre@marca.com" /></div><div class="field"><label for="ticket-channel">Canal de entrada</label><select id="ticket-channel" name="channel"><option value="Portal de marca">Portal de marca</option><option value="Correo de Customer Service">Correo de Customer Service</option></select></div><div class="field"><label for="ticket-order">Número de pedido</label><input id="ticket-order" name="orderId" placeholder="Opcional; si aplica" /></div><div class="field full"><label for="ticket-subject">Título del caso <span class="required">*</span></label><input id="ticket-subject" name="subject" required maxlength="120" placeholder="Describe brevemente lo ocurrido" /></div><div class="field full"><label for="ticket-description">Descripción <span class="required">*</span></label><textarea id="ticket-description" name="description" required placeholder="¿Qué pasó o qué acción se necesita? Indica el impacto observado."></textarea></div><div class="field"><label for="ticket-impact">Impacto <span class="required">*</span></label><select id="ticket-impact" name="impact" required><option value="Alto">Alto</option><option value="Medio">Medio</option><option selected value="Bajo">Bajo</option></select><small>Alto: varias marcas, pagos o pedidos afectados. Medio: una marca con workaround. Bajo: caso individual o función secundaria.</small></div><div class="field"><label for="ticket-urgency">Urgencia <span class="required">*</span></label><select id="ticket-urgency" name="urgency" required><option value="Alta">Alta</option><option value="Media">Media</option><option selected value="Baja">Baja</option></select><small>Alta: ocurre ahora y puede causar pérdidas. Media: resolver hoy. Baja: puede programarse.</small></div><div class="field full"><div class="priority-preview"><div><strong>Prioridad calculada</strong><small>Se determina por impacto y urgencia.</small></div><span id="priority-preview-pill" class="priority-pill p3">P3</span></div></div><div id="request-hint" class="field full request-hint" hidden>Esta solicitud entra a su cola separada para cumplir una acción planificada; no desplaza incidentes que requieren restauración.</div></div></form>`;
+  return `<form id="ticket-form" class="create-ticket-form"><p class="form-instructions">Completa los campos marcados con <span class="required">*</span>. El formulario calcula la prioridad según impacto y urgencia.</p>
+    <fieldset class="form-section"><legend>1. Clasifica el caso</legend><div class="form-grid">
+      <div class="field"><label for="ticket-type">Tipo de demanda <span class="required">*</span></label><select id="ticket-type" name="type" required><option value="Incidente">Incidente</option><option value="Solicitud">Solicitud</option></select><small>Incidente = restaurar. Solicitud = cumplir una acción prevista.</small></div>
+      <div class="field"><label for="ticket-requester-type">Quién reporta <span class="required">*</span></label><select id="ticket-requester-type" name="requesterType" required><option value="Marca">Marca</option><option value="Consumidor">Consumidor</option></select></div>
+      <div class="field"><label for="ticket-category">Categoría del catálogo <span class="required">*</span></label><select id="ticket-category" name="categoryId" required></select></div>
+      <div class="field"><label for="ticket-channel">Canal de entrada</label><select id="ticket-channel" name="channel"><option value="Portal de marca">Portal de marca</option><option value="Correo de Customer Service">Correo de Customer Service</option></select></div>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>2. Datos de contacto</legend><div class="form-grid">
+      <div class="field"><label for="ticket-brand">Marca <span class="required">*</span></label><input id="ticket-brand" name="brand" required placeholder="Ej. Nébula Spirits" /></div>
+      <div class="field"><label for="ticket-requester">Nombre de quien reporta <span class="required">*</span></label><input id="ticket-requester" name="requesterName" required placeholder="Nombre y equipo" /></div>
+      <div class="field"><label for="ticket-email">Correo de contacto</label><input id="ticket-email" name="requesterEmail" type="email" placeholder="nombre@marca.com" /></div>
+      <div class="field"><label for="ticket-order">Número de pedido</label><input id="ticket-order" name="orderId" placeholder="Opcional; si aplica" /></div>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>3. Describe lo ocurrido</legend><div class="form-grid">
+      <div class="field full"><label for="ticket-subject">Título del caso <span class="required">*</span></label><input id="ticket-subject" name="subject" required maxlength="120" placeholder="Describe brevemente lo ocurrido" /></div>
+      <div class="field full"><label for="ticket-description">Descripción <span class="required">*</span></label><textarea id="ticket-description" name="description" required placeholder="¿Qué pasó o qué acción se necesita? Indica el impacto observado."></textarea></div>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>4. Impacto y urgencia</legend><div class="form-grid">
+      <div class="field"><label for="ticket-impact">Impacto <span class="required">*</span></label><select id="ticket-impact" name="impact" required><option value="Alto">Alto</option><option value="Medio">Medio</option><option selected value="Bajo">Bajo</option></select><small>Alto: varias marcas, pagos u órdenes. Medio: una marca con workaround. Bajo: caso individual o función secundaria.</small></div>
+      <div class="field"><label for="ticket-urgency">Urgencia <span class="required">*</span></label><select id="ticket-urgency" name="urgency" required><option value="Alta">Alta</option><option value="Media">Media</option><option selected value="Baja">Baja</option></select><small>Alta: ocurre ahora y puede causar pérdidas. Media: resolver hoy. Baja: puede programarse.</small></div>
+      <div class="field full"><div class="priority-preview" aria-live="polite"><div><strong>Prioridad calculada</strong><small>Se determina por impacto y urgencia.</small></div><span id="priority-preview-pill" class="priority-pill p3">P3</span></div></div>
+      <div id="request-hint" class="field full request-hint" hidden>Esta solicitud entra a su cola separada para cumplir una acción planificada; no desplaza incidentes que requieren restauración.</div>
+    </div></fieldset></form>`;
 }
 
 function bindCreateForm(form) {
@@ -724,6 +881,7 @@ document.body.addEventListener("click", (event) => {
   }
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (action === "new-ticket") { openCreateDialog(); return; }
+  if (action === "new-category") { openCategoryDialog(); return; }
   if (action === "analyze-problem") { openProblemDialog(event.target.closest("[data-category-id]").dataset.categoryId); return; }
   if (action === "close-modal") { closeModal(); return; }
   if (action === "backdrop-close" && event.target.classList.contains("modal-backdrop")) { closeModal(); return; }
@@ -731,9 +889,7 @@ document.body.addEventListener("click", (event) => {
   if (ticketNode) { openTicket(ticketNode.dataset.ticketId); return; }
   const typeTab = event.target.closest("[data-type-filter]");
   if (typeTab) {
-    state.typeFilter = typeTab.dataset.typeFilter;
-    state.view = "tickets";
-    render();
+    selectQueueView(typeTab.dataset.typeFilter);
   }
 });
 

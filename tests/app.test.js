@@ -4,7 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadApp() {
+function loadApp(storage = { getItem: () => null, setItem() {} }) {
   const appPath = path.join(__dirname, "..", "app.js");
   let source = fs.readFileSync(appPath, "utf8");
   source = source.replace(/\ndocument\.querySelector\("#today-label"\)\.textContent = [\s\S]*?;\s*render\(\);\s*$/, "");
@@ -17,6 +17,14 @@ function loadApp() {
       renderCatalog: typeof renderCatalog === "function" ? renderCatalog : null,
       renderServiceLevels: typeof renderServiceLevels === "function" ? renderServiceLevels : null,
       renderDashboard: typeof renderDashboard === "function" ? renderDashboard : null,
+      categoryFormMarkup: typeof categoryFormMarkup === "function" ? categoryFormMarkup : null,
+      addCatalogCategory: typeof addCatalogCategory === "function" ? addCatalogCategory : null,
+      heatLevel: typeof heatLevel === "function" ? heatLevel : null,
+      priorityHeatColor: typeof priorityHeatColor === "function" ? priorityHeatColor : null,
+      selectQueueView: typeof selectQueueView === "function" ? selectQueueView : null,
+      createFormMarkup: typeof createFormMarkup === "function" ? createFormMarkup : null,
+      seedTickets: typeof seedTickets === "function" ? seedTickets : null,
+      refreshStaleDemoDates: typeof refreshStaleDemoDates === "function" ? refreshStaleDemoDates : null,
       buildTicketIntakeTrend: typeof buildTicketIntakeTrend === "function" ? buildTicketIntakeTrend : null,
       businessMinutesBetween: typeof businessMinutesBetween === "function" ? businessMinutesBetween : null,
       responseMetricsByPriority: typeof responseMetricsByPriority === "function" ? responseMetricsByPriority : null,
@@ -40,7 +48,7 @@ function loadApp() {
       body: { addEventListener() {} },
       addEventListener() {},
     },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: storage,
     console,
     Intl,
     Date,
@@ -192,6 +200,46 @@ test("filters the support queue by selected priority", () => {
   assert.doesNotMatch(html, /BV-P3/);
 });
 
+test("queue tabs navigate to their full service page and clear stale filters", () => {
+  const api = loadApp();
+  assert.equal(typeof api.selectQueueView, "function");
+  api.state.search = "pedido viejo";
+  api.state.statusFilter = "Cerrado";
+  api.state.priorityFilter = "P1";
+
+  api.selectQueueView("Incidente");
+  assert.equal(api.state.view, "incidents");
+  assert.equal(api.state.typeFilter, "Incidente");
+  assert.equal(api.state.search, "");
+  assert.equal(api.state.statusFilter, "Todos los estados");
+  assert.equal(api.state.priorityFilter, "Todas las prioridades");
+
+  api.selectQueueView("Solicitud");
+  assert.equal(api.state.view, "requests");
+  assert.equal(api.state.typeFilter, "Solicitud");
+
+  api.selectQueueView("Todos");
+  assert.equal(api.state.view, "tickets");
+  assert.equal(api.state.typeFilter, "Todos");
+});
+
+test("queue tabs show global ticket totals regardless of the current page filters", () => {
+  const api = loadApp();
+  api.state.view = "incidents";
+  api.state.priorityFilter = "P1";
+  api.state.statusFilter = "Nuevo";
+  api.state.tickets = [
+    { id: "BV-1", type: "Incidente", categoryId: "payment-without-order", priority: "P1", status: "Nuevo", createdAt: "2026-11-02T12:00:00Z" },
+    { id: "BV-2", type: "Incidente", categoryId: "incorrect-inventory", priority: "P2", status: "Resuelto", createdAt: "2026-11-02T12:00:00Z" },
+    { id: "BV-3", type: "Solicitud", categoryId: "shipping-rules", priority: "P3", status: "Nuevo", createdAt: "2026-11-02T12:00:00Z" },
+  ];
+
+  const html = api.renderTicketQueue();
+  assert.match(html, /Todos<span>3<\/span>/);
+  assert.match(html, /Incidentes<span>2<\/span>/);
+  assert.match(html, /Solicitudes<span>1<\/span>/);
+});
+
 test("calculates all nine impact and urgency combinations", () => {
   const api = loadApp();
   assert.equal(typeof api.calculatePriority, "function");
@@ -224,6 +272,7 @@ test("shows internal SLO, OLA, and separate escalation paths", () => {
   assert.match(html, /N3 proveedor/);
   assert.match(html, /Tech Lead/);
   assert.match(html, /dirección \/ CEO/);
+  assert.match(html, /class="sla-table-wrap" role="region"/);
 });
 
 test("compares requester origins and active priorities on the dashboard", () => {
@@ -240,9 +289,9 @@ test("compares requester origins and active priorities on the dashboard", () => 
   assert.match(html, /Marcas<\/span><strong>2<\/strong>/);
   assert.match(html, /Consumidores<\/span><strong>1<\/strong>/);
   assert.match(html, /Prioridad de la cola activa/);
-  assert.match(html, /P1<\/span><strong>1<\/strong>/);
-  assert.match(html, /P2<\/span><strong>1<\/strong>/);
-  assert.match(html, /P3<\/span><strong>0<\/strong>/);
+  assert.match(html, /Prioridad P1: 1 ticket activo/);
+  assert.match(html, /Prioridad P2: 1 ticket activo/);
+  assert.match(html, /Prioridad P3: 0 tickets activos/);
   assert.match(html, /Tickets activos/);
 });
 
@@ -302,18 +351,123 @@ test("groups active queue age by priority using elapsed clock time, excluding re
   ]);
 });
 
-test("dashboard explains the decision and limits of its three monitoring charts", () => {
-  const html = loadApp().renderDashboard();
+test("dashboard shows daily intake and ticket categories without low-value monitoring charts or eyebrow labels", () => {
+  const api = loadApp();
+  const html = api.renderDashboard();
   assert.match(html, /Entrada diaria de tickets/);
   assert.match(html, /class="legend-dot intake-incident"/);
   assert.match(html, /class="legend-dot intake-request"/);
-  assert.match(html, /Primera respuesta por prioridad/);
-  assert.match(html, /p50/);
-  assert.match(html, /p95/);
-  assert.match(html, /Antigüedad de la cola activa/);
-  assert.match(html, /tiempo corrido/);
-  assert.match(html, /no equivale.*incumplimiento/i);
+  assert.match(html, /Tickets por categoría/);
+  assert.doesNotMatch(html, /Primera respuesta por prioridad/);
+  assert.doesNotMatch(html, /Antigüedad de la cola activa/);
+  assert.doesNotMatch(html, /class="eyebrow"/);
   assert.match(html, /decisión/i);
+});
+
+test("demo ticket dates fill the seven calendar days used by the daily intake chart", () => {
+  const api = loadApp();
+  const trend = api.buildTicketIntakeTrend(api.seedTickets(), new Date());
+  assert.equal(trend.length, 7);
+  assert.ok(trend.every((day) => day.incidents + day.requests > 0));
+});
+
+test("refreshes only stale built-in demo dates while preserving user-created ticket dates", () => {
+  const api = loadApp();
+  const staleDate = "2026-01-01T12:00:00.000Z";
+  const tickets = [
+    ...api.seedTickets().map((ticket) => ({ ...ticket, createdAt: staleDate })),
+    { id: "BV-9000", type: "Solicitud", createdAt: staleDate },
+  ];
+  const now = new Date("2026-11-02T18:00:00.000Z");
+  const refreshed = api.refreshStaleDemoDates(tickets, now);
+  const trend = api.buildTicketIntakeTrend(refreshed, now);
+  assert.ok(trend.every((day) => day.incidents + day.requests > 0));
+  assert.equal(refreshed.find((ticket) => ticket.id === "BV-9000").createdAt, staleDate);
+});
+
+test("create-ticket form groups required fields into clear, accessible sections", () => {
+  const html = loadApp().createFormMarkup();
+  assert.match(html, /<fieldset[^>]*class="form-section"/);
+  assert.match(html, /<legend>1\. Clasifica el caso<\/legend>/);
+  assert.match(html, /<legend>2\. Datos de contacto<\/legend>/);
+  assert.match(html, /<legend>3\. Describe lo ocurrido<\/legend>/);
+  assert.match(html, /<legend>4\. Impacto y urgencia<\/legend>/);
+  assert.match(html, /Completa los campos marcados con/);
+});
+
+test("service pages omit decorative eyebrow labels", () => {
+  const api = loadApp();
+  for (const html of [api.renderDashboard(), api.renderTicketQueue(), api.renderProblems(), api.renderCatalog(), api.renderServiceLevels()]) {
+    assert.doesNotMatch(html, /class="eyebrow"/);
+    assert.doesNotMatch(html, /Vista de operación|Bandeja de trabajo|Mejora continua · análisis basado en tickets/);
+  }
+});
+
+test("ticket creation remains easy to find from summary, queues, and catalog", () => {
+  const api = loadApp();
+  for (const html of [api.renderDashboard(), api.renderTicketQueue()]) {
+    assert.match(html, /class="primary-button create-ticket-button" data-action="new-ticket"/);
+  }
+  assert.match(api.renderCatalog(), /data-action="new-category"/);
+  assert.doesNotMatch(api.renderCatalog(), /data-action="new-ticket"/);
+});
+
+test("dashboard shows a priority heatmap whose counts include only active tickets", () => {
+  const api = loadApp();
+  api.state.tickets = [
+    { id: "BV-1", type: "Incidente", categoryId: "payment-without-order", priority: "P1", status: "En progreso", createdAt: "2026-11-02T12:00:00Z" },
+    { id: "BV-2", type: "Incidente", categoryId: "incorrect-inventory", priority: "P2", status: "Nuevo", createdAt: "2026-11-02T12:00:00Z" },
+    { id: "BV-3", type: "Solicitud", categoryId: "shipping-rules", priority: "P3", status: "Cerrado", createdAt: "2026-11-02T12:00:00Z" },
+  ];
+  const html = api.renderDashboard();
+  assert.match(html, /Mapa de calor de prioridad/);
+  assert.match(html, /Prioridad P1: 1 ticket activo/);
+  assert.match(html, /Prioridad P2: 1 ticket activo/);
+  assert.match(html, /Prioridad P3: 0 tickets activos/);
+  assert.doesNotMatch(html, /Antigüedad de la cola activa|Primera respuesta por prioridad/);
+  assert.match(html, /Más intenso = más tickets/);
+  assert.equal(api.priorityHeatColor("P1", 0), "#fff0ef");
+  assert.equal(api.priorityHeatColor("P1", 10), "#a51e1e");
+  assert.equal(api.priorityHeatColor("P1", 99), "#a51e1e");
+  assert.equal(api.priorityHeatColor("P2", 10), "#9a5100");
+  assert.equal(api.priorityHeatColor("P3", 10), "#206b41");
+  assert.notEqual(api.priorityHeatColor("P1", 5), api.priorityHeatColor("P2", 5));
+});
+
+test("catalog categories can be added for either ticket type and persist only custom entries", () => {
+  const entries = new Map();
+  const storage = {
+    getItem: (key) => entries.get(key) || null,
+    setItem: (key, value) => entries.set(key, value),
+  };
+  const api = loadApp(storage);
+  const created = api.addCatalogCategory({
+    name: "Revisión de promociones",
+    type: "Solicitud",
+    description: "Validar la configuración de una campaña.",
+    reporter: "Equipo de marketing de la marca",
+    owner: "Account Management",
+  });
+  assert.equal(created.name, "Revisión de promociones");
+  assert.equal(api.catalog.at(-1).type, "Solicitud");
+  assert.match(api.renderCatalog(), /Revisión de promociones/);
+  assert.equal(JSON.parse(entries.get("bevstack-service-desk-catalog-v1")).length, 1);
+  assert.equal(api.addCatalogCategory({ name: "Revisión de promociones", type: "Solicitud", description: "x", reporter: "x", owner: "x" }), null);
+  assert.match(loadApp(storage).renderCatalog(), /Revisión de promociones/);
+});
+
+test("category editor exposes the type, explanation, reporter, and first-line owner as required fields", () => {
+  const html = loadApp().categoryFormMarkup();
+  assert.match(html, /name="type" required/);
+  assert.match(html, /name="name" required/);
+  assert.match(html, /name="description" required/);
+  assert.match(html, /name="reporter" required/);
+  assert.match(html, /name="owner" required/);
+});
+
+test("top bar and workspace contain no nonfunctional help, notification, or workspace-switch controls", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.doesNotMatch(html, /class="icon-button"|class="help-button"|class="chevron"/);
 });
 
 test("keeps the dashboard concise without removing its operating rules or service navigation", () => {
