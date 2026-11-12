@@ -26,6 +26,8 @@ Proyecto del curso **CC3047 · Administración y Mantenimiento de Sistemas (UVG)
 pnpm install        # dependencias (Node >= 22.12, pnpm)
 pnpm dev            # frontend Service Desk (Vite)
 pnpm api            # API simulada en http://127.0.0.1:4000, logs en logs/api.log
+pnpm traffic        # generador de tráfico continuo contra la API (Ctrl+C para detener)
+pnpm logs:sample    # regenera logs/sample-api.log (muestra entregable)
 pnpm test           # todas las pruebas (node:test)
 pnpm build          # build del frontend
 ```

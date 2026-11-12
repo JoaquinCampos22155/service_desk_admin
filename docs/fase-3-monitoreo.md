@@ -26,7 +26,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 |---|---|---|---|
 | 1 | A | `feat: add simulated service API with ECS logging`: servidor, logger ECS, `/api/health` y configuración | ✅ Listo |
 | 2 | A | `feat: add catalog endpoints with error ratio and latency`: los 8 endpoints del catálogo | ✅ Listo |
-| 3 | A | `feat: add continuous traffic generator`: script de tráfico y muestra `logs/sample-api.log` (50+ líneas) | Pendiente |
+| 3 | A | `feat: add continuous traffic generator`: script de tráfico y muestra `logs/sample-api.log` (50+ líneas) | ✅ Listo |
 | 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | Pendiente |
 | 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | Pendiente |
 | 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | Pendiente |
@@ -73,6 +73,45 @@ Las rutas inexistentes responden `404` y un método no permitido responde `405` 
 Prueba local con 400 peticiones (8 endpoints × 50) y la configuración por defecto: 331 éxitos (83%), 50 errores 4xx (12.5%) y 19 errores 5xx (4.75%). Promedios de latencia: inventario ~78 ms, opciones de envío ~132 ms, configuraciones y productos ~160–180 ms, tiendas ~327 ms, pedidos ~460 ms y pagos ~623 ms, con picos de hasta ~2 s.
 
 `GET /api/health` responde `{"status":"up","service":...,"environment":...,"uptimeSeconds":...,"timestamp":...}`. Lo usará Heartbeat. Estas peticiones también se registran; en Kibana se pueden excluir con el filtro `NOT url.path : "/api/health"` si distorsionan el top de endpoints.
+
+## Generador de tráfico
+
+`scripts/traffic-generator.mjs` envía peticiones HTTP reales de forma **continua** a los 8 endpoints del catálogo, hasta que se detiene con `Ctrl+C`. Es el entregable "generador de tráfico" de la fase.
+
+```bash
+pnpm api                                   # terminal 1
+pnpm traffic                               # terminal 2: ~5 req/s sin límite
+pnpm traffic -- --rps 10 --duration 300    # 10 req/s durante 5 minutos
+pnpm traffic -- --url http://api:4000      # otra URL (por ejemplo, dentro de Docker)
+```
+
+| Opción | Variable de entorno | Valor por defecto | Uso |
+|---|---|---|---|
+| `--url` | `TARGET_URL` | `http://127.0.0.1:4000` | URL base de la API. |
+| `--rps` | `REQUESTS_PER_SECOND` | `5` | Ritmo promedio. Cada intervalo varía ±50% para que el tráfico tenga ráfagas y no sea una línea plana. `0` envía sin pausa. |
+| `--duration` | `DURATION_SECONDS` | `0` (sin límite) | Segundos antes de detenerse. |
+| `--max` | `MAX_REQUESTS` | `0` (sin límite) | Número de peticiones antes de detenerse. |
+| `--concurrency` | `MAX_IN_FLIGHT` | `20` | Máximo de peticiones simultáneas sin respuesta. |
+
+Funcionamiento:
+
+- En cada ciclo elige un endpoint según un **peso** que imita una operación real: las consultas dominan y los cambios de configuración son raros. Pesos: inventario 25, opciones de envío 20, pedidos 15, pagos 12, productos 10, reglas de envío 6, configuración operativa 5, nueva tienda 4.
+- Varía los parámetros (SKU, tienda, zona, marca, montos), así que `url.path` muestra rutas como `/api/inventory/SKU-618`.
+- No llama a `/api/health`; eso lo hace Heartbeat.
+- Cada 10 s imprime el progreso, y otra vez al terminar: respuestas, req/s y porcentaje de 2xx, 4xx y 5xx. Si la API no responde, cuenta las peticiones "sin respuesta" sin detenerse. Así se puede apagar la API para que Heartbeat marque *down* y el generador sigue corriendo.
+
+Prueba local (API real, `--rps 8 --duration 25`): 198/198 respuestas a 7.9 req/s, con 77.8% 2xx, 18.7% 4xx y 3.5% 5xx; la API escribió exactamente una línea de log por petición.
+
+### Muestra de logs entregable
+
+`logs/sample-api.log` es la muestra de logs que pide la fase (al menos 50 registros). Se regenera con:
+
+```bash
+pnpm logs:sample                            # 200 peticiones a ~20 req/s
+pnpm logs:sample -- --requests 500 --rps 25
+```
+
+El script levanta la API real dentro del mismo proceso, en un puerto libre y con la configuración por defecto, la recorre con el generador y llama a `/api/health` cada 2 s como haría Heartbeat. Las líneas las escribe la propia API; no se fabrican a mano. La muestra actual tiene **205 registros**: 175 `info`, 17 `warn` y 13 `error`, con todos los campos obligatorios, todos los endpoints del catálogo y `/api/health`. Es el único archivo de `logs/` que se versiona.
 
 ## Ejecutar la API
 
@@ -141,6 +180,9 @@ Notas para quien configure Filebeat (commit 4):
 | `api/server.mjs` | Punto de entrada: arma configuración, logger, simulador y rutas; cierra ordenadamente con `SIGINT`/`SIGTERM`. |
 | `tests/api.test.mjs` | Pruebas con `node:test`: configuración, formato del log, salud, 404, 405, parámetros y errores. |
 | `tests/api-catalog.test.mjs` | Pruebas del catálogo: correspondencia con la Fase 1, proporción de errores, latencia, éxitos, 4xx y 5xx forzados, y JSON inválido. |
+| `scripts/traffic-generator.mjs` | Generador de tráfico continuo (`pnpm traffic`). Exporta `buildRequest`, `runTraffic`, `parseCliOptions` y `formatStats` para las pruebas. |
+| `scripts/generate-sample-log.mjs` | Regenera `logs/sample-api.log` (`pnpm logs:sample`). |
+| `tests/traffic-generator.test.mjs` | Pruebas del generador: cobertura de los 8 endpoints, métodos, tráfico contra la API real con una línea de log por petición, API caída, detención y opciones. |
 
 Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.
 

@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "api": "node api/server.mjs",
+    "traffic": "node scripts/traffic-generator.mjs",
+    "logs:sample": "node scripts/generate-sample-log.mjs",
     "build": "vite build",
     "test": "node --test",
     "test:db": "supabase test db"
