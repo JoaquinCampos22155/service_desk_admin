@@ -1,0 +1,32 @@
+# Filebeat · recolecta los logs de la API simulada y los envía a Elasticsearch.
+# La API escribe una línea JSON (ECS) por petición en logs/api.log (montado en /logs).
+
+filebeat.inputs:
+  - type: filestream
+    id: bevstack-api-logs
+    paths:
+      - /logs/api.log
+    parsers:
+      # Cada línea es un documento JSON. target: "" deja los campos en la raíz
+      # (http.request.method, event.duration, ...) en lugar de bajo json.*.
+      # overwrite_keys conserva el @timestamp que escribió la API.
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          expand_keys: true
+          add_error_key: true
+
+processors:
+  # Campos del host de Filebeat que no aportan al monitoreo de la API.
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.id", "agent.name", "host.name", "input.type", "log.offset"]
+      ignore_missing: true
+
+# Índice por defecto: data stream filebeat-<versión>. Filebeat instala la plantilla ECS,
+# que mapea event.duration y http.response.status_code como long y url.path, labels.* y
+# error.code como campos agregables, necesarios para las visualizaciones de Kibana.
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+logging.level: info
+logging.metrics.enabled: false

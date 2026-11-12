@@ -30,6 +30,7 @@ pnpm dev            # frontend Service Desk (Vite)
 pnpm api            # API simulada en http://127.0.0.1:4000, logs en logs/api.log
 pnpm traffic        # generador de tráfico continuo contra la API (Ctrl+C para detener)
 pnpm logs:sample    # regenera logs/sample-api.log (muestra entregable)
+docker compose up -d   # stack ELK local: Kibana en http://localhost:5601 (ver docs/fase-3-monitoreo.md)
 pnpm test           # todas las pruebas (node:test)
 pnpm build          # build del frontend
 ```

@@ -28,7 +28,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 | 2 | A | `feat: add catalog endpoints with error ratio and latency`: los 8 endpoints del catálogo | ✅ Listo |
 | 3 | A | `feat: add continuous traffic generator`: script de tráfico y muestra `logs/sample-api.log` (50+ líneas) | ✅ Listo |
 | 3.1 | A | `fix: harden API edge cases and enrich logs`: errores de borde, `HEAD`, campos `labels.*` y `error.*` en el log | ✅ Listo |
-| 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | Pendiente |
+| 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | ✅ Listo |
 | 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | Pendiente |
 | 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | Pendiente |
 
@@ -176,11 +176,63 @@ Los 7 campos obligatorios de la fase son los primeros de la tabla. Los demás so
 | `error.code` | Código interno del error (`payment_gateway_error`, `not_found`, …). Aparece en toda respuesta 4xx/5xx y nunca en las exitosas. Permite ver qué proveedor o causa falla más. |
 | `error.message` | Descripción del error. |
 
-Notas para quien configure Filebeat (commit 4):
+## Stack ELK con Docker
 
-- Usar el input `filestream` con el parser `ndjson` y `target: ""`, para que los campos queden en la raíz del documento y no bajo `json.*`.
-- Mapear `event.duration` como `long`, `http.response.status_code` como `long` o `short`, y `url.path`, `labels.*` y `error.code` como `keyword`, para que funcionen el promedio, la distribución por código y el top de endpoints.
-- `@timestamp` ya viene en el log y debe conservarse (no sustituirlo por la hora de ingesta).
+`docker-compose.yml` levanta todo el entorno de monitoreo en local con Elastic **8.19.5** (cambia con `ELASTIC_VERSION`):
+
+```
+ traffic ──HTTP──▶ api ──escribe──▶ logs/api.log ──lee──▶ filebeat ──▶ elasticsearch ◀── kibana (:5601)
+ (generador)      (:4000)          (NDJSON, ECS)                       (:9200)
+```
+
+| Servicio | Imagen | Función |
+|---|---|---|
+| `elasticsearch` | `elasticsearch:8.19.5` | Almacena los logs. Un solo nodo, sin seguridad (entorno local de curso), 1 GB de heap. Datos en el volumen `esdata`. |
+| `kibana` | `kibana:8.19.5` | Interfaz y dashboards en http://localhost:5601. |
+| `api` | `node:22-alpine` | La API simulada (`api/`, montada como solo lectura) en http://localhost:4000. Escribe `logs/api.log`. |
+| `traffic` | `node:22-alpine` | El generador de tráfico continuo contra `http://api:4000` (~5 req/s; cambia con `TRAFFIC_RPS`). |
+| `filebeat` | `filebeat:8.19.5` | Lee `logs/api.log` con la configuración `elk/filebeat.yml` y envía cada línea a Elasticsearch. |
+
+Los servicios arrancan en orden con *healthchecks*: Kibana y Filebeat esperan a que Elasticsearch esté sano, y el generador espera a la API. El healthcheck de la API es TCP, así que no agrega líneas al log.
+
+### Levantar y detener
+
+Requiere Docker Desktop con al menos 4 GB de memoria asignada. El puerto 4000 debe estar libre (detén `pnpm api` si lo tienes corriendo).
+
+```bash
+docker compose up -d                      # primera vez: descarga ~3 GB de imágenes
+docker compose ps                         # elasticsearch, kibana y api deben verse "healthy"
+docker compose logs -f filebeat           # ver qué envía Filebeat
+docker compose stop traffic               # pausar el tráfico (la API sigue arriba)
+docker compose down                       # detener (los datos se conservan)
+docker compose down -v                    # detener y borrar datos de Elasticsearch y Filebeat
+```
+
+Variables opcionales al levantar: `TRAFFIC_RPS=10`, `SERVER_ERROR_RATE=0.4` (simular un incidente) o `ELASTIC_VERSION=…`. Ejemplo: `SERVER_ERROR_RATE=0.4 docker compose up -d api`.
+
+### Filebeat (`elk/filebeat.yml`)
+
+- Input `filestream` sobre `/logs/api.log` (la carpeta `logs/` del repo, montada como solo lectura). Solo lee `api.log`; la muestra `sample-api.log` no se indexa.
+- Parser `ndjson` con `target: ""` (los campos quedan en la raíz, no bajo `json.*`), `overwrite_keys: true` (se conserva el `@timestamp` de la API, no la hora de ingesta) y `add_error_key: true` (una línea inválida se marca en lugar de perderse).
+- Se eliminan campos del agente que no aportan (`agent.id`, `host.name`, `log.offset`, …).
+- Salida al data stream por defecto `filebeat-8.19.5`, con la plantilla ECS que instala Filebeat. Con ella los campos quedan con estos tipos (verificado):
+
+| Campo | Tipo en Elasticsearch |
+|---|---|
+| `event.duration`, `http.response.status_code` | `long` |
+| `http.request.method`, `service.name`, `log.level`, `labels.route`, `labels.catalog_type`, `error.code` | `keyword` |
+| `url.path` | `wildcard` (agregable) |
+
+### Comprobar que los logs llegan
+
+```bash
+curl -s 'localhost:9200/_cat/indices/filebeat-*?v&h=index,docs.count'
+curl -s 'localhost:9200/filebeat-*/_search?size=1&sort=@timestamp:desc' | python3 -m json.tool
+```
+
+El número de documentos debe crecer unas 5 veces por segundo. En Kibana: **Discover → Create data view** con el patrón `filebeat-*` y el campo de tiempo `@timestamp`.
+
+Prueba local: con el stack recién levantado, a los ~30 s ya había 286 documentos en `filebeat-8.19.5`, con el `@timestamp` original de la API y todos los campos `labels.*` y `error.*`.
 
 ## Estructura del código
 
@@ -197,6 +249,8 @@ Notas para quien configure Filebeat (commit 4):
 | `tests/api-catalog.test.mjs` | Pruebas del catálogo: correspondencia con la Fase 1, proporción de errores, latencia, éxitos, 4xx y 5xx forzados, y JSON inválido. |
 | `scripts/traffic-generator.mjs` | Generador de tráfico continuo (`pnpm traffic`). Exporta `buildRequest`, `runTraffic`, `parseCliOptions` y `formatStats` para las pruebas. |
 | `scripts/generate-sample-log.mjs` | Regenera `logs/sample-api.log` (`pnpm logs:sample`). |
+| `docker-compose.yml` | Stack local: Elasticsearch, Kibana, Filebeat, la API y el generador de tráfico. |
+| `elk/filebeat.yml` | Configuración de Filebeat (input `filestream` + parser `ndjson`). |
 | `tests/traffic-generator.test.mjs` | Pruebas del generador: cobertura de los 8 endpoints, métodos, tráfico contra la API real con una línea de log por petición, API caída, detención y opciones. |
 
 Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`; sus `labels` se generan solos. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler, labels? }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.

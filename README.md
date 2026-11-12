@@ -73,6 +73,8 @@ pnpm traffic        # en otra terminal: tráfico continuo hacia la API (Ctrl+C p
 pnpm logs:sample    # regenera la muestra entregable logs/sample-api.log
 ```
 
+Para el monitoreo completo, con Docker Desktop activo, `docker compose up -d` levanta Elasticsearch, Kibana, Filebeat, la API y el generador de tráfico. Kibana queda en [http://localhost:5601](http://localhost:5601).
+
 La arquitectura, los endpoints, la proporción de errores, el formato de los logs y el estado del trabajo están en [docs/fase-3-monitoreo.md](docs/fase-3-monitoreo.md).
 
 ## Pruebas

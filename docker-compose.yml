@@ -1,0 +1,105 @@
+# Fase 3 · Monitoreo con ELK (local).
+# Levanta Elasticsearch, Kibana, Filebeat, la API simulada y el generador de tráfico.
+#   docker compose up -d        → Kibana en http://localhost:5601 (1–2 min en arrancar)
+#   docker compose down         → detiene todo (los datos quedan en volúmenes)
+#   docker compose down -v      → detiene y borra los datos
+# Detalles: docs/fase-3-monitoreo.md
+name: bevstack-monitoring
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.5}
+    environment:
+      - discovery.type=single-node
+      - cluster.name=bevstack-monitoring
+      # Entorno local de curso: sin TLS ni usuarios para simplificar la conexión.
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.19.5}
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_PUBLICBASEURL=http://localhost:5601
+      # Sin banner de telemetría en el dashboard (entorno local de curso).
+      - TELEMETRY_OPTIN=false
+      - TELEMETRY_ALLOWCHANGINGOPTINSTATUS=false
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:5601/api/status | grep -q '\"level\":\"available\"' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 40
+
+  # API simulada del servicio (api/). Escribe un JSON por petición en ./logs/api.log.
+  api:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "api/server.mjs"]
+    environment:
+      - HOST=0.0.0.0
+      - PORT=4000
+      - LOG_FILE=/app/logs/api.log
+      - LOG_TO_STDOUT=false
+      - SERVICE_ENVIRONMENT=docker
+      - CLIENT_ERROR_RATE=${CLIENT_ERROR_RATE:-0.15}
+      - SERVER_ERROR_RATE=${SERVER_ERROR_RATE:-0.05}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./api:/app/api:ro
+      - ./logs:/app/logs
+    healthcheck:
+      # Chequeo TCP: no genera líneas en el log (Heartbeat es quien consulta /api/health).
+      test: ["CMD", "node", "-e", "require('net').connect(4000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Generador de tráfico continuo (scripts/traffic-generator.mjs) contra la API.
+  traffic:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "scripts/traffic-generator.mjs", "--url", "http://api:4000"]
+    environment:
+      - REQUESTS_PER_SECOND=${TRAFFIC_RPS:-5}
+    volumes:
+      - ./api:/app/api:ro
+      - ./scripts:/app/scripts:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Filebeat lee ./logs/api.log y envía cada línea a Elasticsearch (índice filebeat-*).
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:${ELASTIC_VERSION:-8.19.5}
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./elk/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./logs:/logs:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  esdata:
+  filebeat-data:
