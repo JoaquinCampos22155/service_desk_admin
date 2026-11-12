@@ -1,0 +1,34 @@
+# Heartbeat · verifica que la API simulada esté arriba (estado up/down y tiempo de respuesta).
+# Todos los endpoints viven en el mismo servidor, así que un monitor sobre /api/health basta.
+
+heartbeat.monitors:
+  - type: http
+    id: bevstack-api-health
+    name: Bevstack e-commerce API
+    service.name: bevstack-ecommerce-api
+    schedule: "@every 10s"
+    urls: ["http://api:4000/api/health"]
+    timeout: 5s
+    check.request.method: GET
+    check.response:
+      # "up" solo si responde 200 y el cuerpo confirma {"status":"up"}.
+      status: [200]
+      json:
+        - description: la API reporta status up
+          condition:
+            equals:
+              status: up
+    tags: ["bevstack", "fase-3"]
+
+processors:
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.id", "agent.name", "host.name"]
+      ignore_missing: true
+
+# Índice por defecto: data stream heartbeat-<versión>, con plantilla ECS
+# (monitor.status, monitor.duration.us, url.full, ...).
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+logging.level: info
+logging.metrics.enabled: false

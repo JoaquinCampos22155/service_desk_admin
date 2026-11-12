@@ -29,7 +29,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 | 3 | A | `feat: add continuous traffic generator`: script de tráfico y muestra `logs/sample-api.log` (50+ líneas) | ✅ Listo |
 | 3.1 | A | `fix: harden API edge cases and enrich logs`: errores de borde, `HEAD`, campos `labels.*` y `error.*` en el log | ✅ Listo |
 | 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | ✅ Listo |
-| 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | Pendiente |
+| 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | ✅ Listo |
 | 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | Pendiente |
 
 Todo corre **en local**; no se despliega nada nuevo en Render.
@@ -183,6 +183,8 @@ Los 7 campos obligatorios de la fase son los primeros de la tabla. Los demás so
 ```
  traffic ──HTTP──▶ api ──escribe──▶ logs/api.log ──lee──▶ filebeat ──▶ elasticsearch ◀── kibana (:5601)
  (generador)      (:4000)          (NDJSON, ECS)                       (:9200)
+                   ▲                                                       ▲
+                   └──── GET /api/health cada 10 s ──── heartbeat ──────────┘
 ```
 
 | Servicio | Imagen | Función |
@@ -192,6 +194,7 @@ Los 7 campos obligatorios de la fase son los primeros de la tabla. Los demás so
 | `api` | `node:22-alpine` | La API simulada (`api/`, montada como solo lectura) en http://localhost:4000. Escribe `logs/api.log`. |
 | `traffic` | `node:22-alpine` | El generador de tráfico continuo contra `http://api:4000` (~5 req/s; cambia con `TRAFFIC_RPS`). |
 | `filebeat` | `filebeat:8.19.5` | Lee `logs/api.log` con la configuración `elk/filebeat.yml` y envía cada línea a Elasticsearch. |
+| `heartbeat` | `heartbeat:8.19.5` | Consulta `http://api:4000/api/health` cada 10 s con `elk/heartbeat.yml` y registra `up`/`down` y el tiempo de respuesta. |
 
 Los servicios arrancan en orden con *healthchecks*: Kibana y Filebeat esperan a que Elasticsearch esté sano, y el generador espera a la API. El healthcheck de la API es TCP, así que no agrega líneas al log.
 
@@ -232,6 +235,28 @@ curl -s 'localhost:9200/filebeat-*/_search?size=1&sort=@timestamp:desc' | python
 
 El número de documentos debe crecer unas 5 veces por segundo. En Kibana: **Discover → Create data view** con el patrón `filebeat-*` y el campo de tiempo `@timestamp`.
 
+### Heartbeat (`elk/heartbeat.yml`)
+
+Todos los endpoints viven en la misma API, así que, como permite el enunciado, un único monitor basta para saber si el ambiente que los expone está arriba.
+
+- Monitor `http` con id `bevstack-api-health` y nombre `Bevstack e-commerce API`, cada **10 s**, sobre `http://api:4000/api/health` y con *timeout* de 5 s.
+- Es `up` solo si la respuesta es **200** y el JSON trae `"status": "up"`. Cualquier otro código, un *timeout* o la API inaccesible lo marcan `down`, con la causa en `error.message`.
+- Escribe en el data stream `heartbeat-8.19.5`. Campos útiles para Kibana: `monitor.status` (`up`/`down`), `monitor.duration.us` (tiempo de respuesta en microsegundos), `monitor.name`, `url.full`, `error.message` y `summary.up` / `summary.down`.
+- Sus llamadas a `/api/health` también aparecen en los logs de la API (una cada 10 s). En las visualizaciones de tráfico se pueden excluir con `NOT labels.route : "/api/health"`.
+
+Prueba de caída (verificada): con `docker compose stop api` durante 40 s, Heartbeat registró 4 chequeos `down` con `error.message: "lookup api … no such host"`. Tras `docker compose start api` volvió a `up`. Mientras tanto, el generador siguió corriendo y contó esas peticiones como "sin respuesta".
+
+Para repetirla en la demo:
+
+```bash
+docker compose stop api      # el monitor pasa a down en ≤10 s
+docker compose start api     # vuelve a up
+curl -s 'localhost:9200/heartbeat-*/_search?size=0' -H 'content-type: application/json' \
+  -d '{"aggs":{"estado":{"terms":{"field":"monitor.status"}}}}'
+```
+
+Kibana también muestra este monitor en **Observability → Uptime**.
+
 Prueba local: con el stack recién levantado, a los ~30 s ya había 286 documentos en `filebeat-8.19.5`, con el `@timestamp` original de la API y todos los campos `labels.*` y `error.*`.
 
 ## Estructura del código
@@ -249,8 +274,9 @@ Prueba local: con el stack recién levantado, a los ~30 s ya había 286 document
 | `tests/api-catalog.test.mjs` | Pruebas del catálogo: correspondencia con la Fase 1, proporción de errores, latencia, éxitos, 4xx y 5xx forzados, y JSON inválido. |
 | `scripts/traffic-generator.mjs` | Generador de tráfico continuo (`pnpm traffic`). Exporta `buildRequest`, `runTraffic`, `parseCliOptions` y `formatStats` para las pruebas. |
 | `scripts/generate-sample-log.mjs` | Regenera `logs/sample-api.log` (`pnpm logs:sample`). |
-| `docker-compose.yml` | Stack local: Elasticsearch, Kibana, Filebeat, la API y el generador de tráfico. |
+| `docker-compose.yml` | Stack local: Elasticsearch, Kibana, Filebeat, Heartbeat, la API y el generador de tráfico. |
 | `elk/filebeat.yml` | Configuración de Filebeat (input `filestream` + parser `ndjson`). |
+| `elk/heartbeat.yml` | Monitor de Heartbeat sobre `/api/health`. |
 | `tests/traffic-generator.test.mjs` | Pruebas del generador: cobertura de los 8 endpoints, métodos, tráfico contra la API real con una línea de log por petición, API caída, detención y opciones. |
 
 Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`; sus `labels` se generan solos. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler, labels? }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.

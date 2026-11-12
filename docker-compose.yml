@@ -1,5 +1,5 @@
 # Fase 3 · Monitoreo con ELK (local).
-# Levanta Elasticsearch, Kibana, Filebeat, la API simulada y el generador de tráfico.
+# Levanta Elasticsearch, Kibana, Filebeat, Heartbeat, la API simulada y el generador de tráfico.
 #   docker compose up -d        → Kibana en http://localhost:5601 (1–2 min en arrancar)
 #   docker compose down         → detiene todo (los datos quedan en volúmenes)
 #   docker compose down -v      → detiene y borra los datos
@@ -95,6 +95,17 @@ services:
       - ./elk/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - ./logs:/logs:ro
       - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Heartbeat consulta /api/health cada 10 s y registra up/down (índice heartbeat-*).
+  heartbeat:
+    image: docker.elastic.co/beats/heartbeat:${ELASTIC_VERSION:-8.19.5}
+    command: ["heartbeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./elk/heartbeat.yml:/usr/share/heartbeat/heartbeat.yml:ro
     depends_on:
       elasticsearch:
         condition: service_healthy
