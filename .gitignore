@@ -3,3 +3,7 @@ dist/
 .env*
 !.env.example
 .superpowers/
+
+# Logs generados por la API simulada (Fase 3)
+logs/*.log
+!logs/sample-api.log
