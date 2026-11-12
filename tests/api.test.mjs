@@ -132,7 +132,7 @@ test("wrong method returns 405 with an Allow header", async () => {
   try {
     const response = await fetch(server.url("/api/health"), { method: "DELETE" });
     assert.equal(response.status, 405);
-    assert.equal(response.headers.get("allow"), "GET");
+    assert.equal(response.headers.get("allow"), "GET, HEAD");
     assert.equal(server.lines[0].http.response.status_code, 405);
   } finally {
     await server.close();
@@ -165,4 +165,63 @@ test("route params, HttpError and unexpected errors are handled and logged", asy
   } finally {
     await server.close();
   }
+});
+
+test("malformed percent-encoding in a route param is a 400, not a 500", async () => {
+  const server = await startTestServer([
+    { method: "GET", path: "/api/items/:sku", handler: ({ params }) => ({ status: 200, body: { sku: params.sku } }) },
+  ]);
+  try {
+    const response = await fetch(server.url("/api/items/%E0%A4%A"));
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "invalid_path");
+    assert.equal(server.lines[0].log.level, "warn");
+    assert.equal(server.lines[0].error.code, "invalid_path");
+  } finally {
+    await server.close();
+  }
+});
+
+test("HEAD is answered by GET routes without a body and advertised in Allow", async () => {
+  const server = await startTestServer([{ method: "POST", path: "/api/orders", handler: () => ({ status: 201, body: {} }) }]);
+  try {
+    const head = await fetch(server.url("/api/health"), { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+    assert.equal(server.lines[0].http.request.method, "HEAD");
+
+    const wrong = await fetch(server.url("/api/health"), { method: "POST" });
+    assert.equal(wrong.status, 405);
+    assert.equal(wrong.headers.get("allow"), "GET, HEAD");
+
+    const headOnPost = await fetch(server.url("/api/orders"), { method: "HEAD" });
+    assert.equal(headOnPost.status, 405);
+    assert.equal(headOnPost.headers.get("allow"), "POST");
+  } finally {
+    await server.close();
+  }
+});
+
+test("logs carry route template, route labels and error details", async () => {
+  const server = await startTestServer([
+    { method: "GET", path: "/api/items/:sku", labels: { catalog_item: "demo", catalog_type: "Incidente" }, handler: () => { throw new HttpError(502, "upstream_down", "Proveedor caído."); } },
+  ]);
+  try {
+    await fetch(server.url("/api/items/SKU-9"));
+    await fetch(server.url("/api/nowhere"));
+    const [failed, missing] = server.lines;
+    assert.equal(failed.url.path, "/api/items/SKU-9");
+    assert.deepEqual(failed.labels, { route: "/api/items/:sku", catalog_item: "demo", catalog_type: "Incidente" });
+    assert.deepEqual(failed.error, { code: "upstream_down", message: "Proveedor caído." });
+    assert.equal(missing.labels, undefined, "unmatched routes have no route label");
+    assert.equal(missing.error.code, "not_found");
+  } finally {
+    await server.close();
+  }
+});
+
+test("successful requests have no error object", () => {
+  const document = buildRequestLog({ timestamp: new Date(), serviceName: "s", environment: "e", method: "GET", path: "/api/health", statusCode: 200, durationNs: 1, route: "/api/health" });
+  assert.equal(document.error, undefined);
+  assert.deepEqual(document.labels, { route: "/api/health" });
 });

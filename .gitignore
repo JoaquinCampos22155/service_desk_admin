@@ -7,3 +7,7 @@ dist/
 # Logs generados por la API simulada (Fase 3)
 logs/*.log
 !logs/sample-api.log
+
+# Material de entregas (PDFs con credenciales, copias del repo): no versionar
+*.pdf
+*.zip

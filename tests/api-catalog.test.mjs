@@ -153,3 +153,17 @@ test("malformed JSON is always rejected with 400 invalid_json", async () => {
     await server.close();
   }
 });
+
+test("catalog logs are labelled with route template, catalog item and type", async () => {
+  const server = await startCatalogServer({ clientErrorRate: 0, serverErrorRate: 1 });
+  try {
+    for (const endpoint of CATALOG_ENDPOINTS) await (await server.request(endpoint)).arrayBuffer();
+    CATALOG_ENDPOINTS.forEach((endpoint, index) => {
+      const line = server.lines[index];
+      assert.deepEqual(line.labels, { route: endpoint.path, catalog_item: endpoint.id, catalog_type: endpoint.type });
+      assert.ok(endpoint.serverErrors.some((error) => error.code === line.error.code), line.error.code);
+    });
+  } finally {
+    await server.close();
+  }
+});

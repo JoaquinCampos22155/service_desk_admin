@@ -19,6 +19,14 @@ function compilePattern(pattern) {
   return { regex: new RegExp(`^${source}/?$`), names };
 }
 
+function decodeParam(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new HttpError(400, "invalid_path", "La ruta contiene una codificación inválida.");
+  }
+}
+
 export function createRouter(routes) {
   const compiled = routes.map((route) => ({ ...route, method: route.method.toUpperCase(), ...compilePattern(route.path) }));
   return function match(method, path) {
@@ -26,25 +34,28 @@ export function createRouter(routes) {
     for (const route of compiled) {
       const result = route.regex.exec(path);
       if (!result) continue;
-      if (route.method !== method) {
+      // HEAD is answered by the GET handler (headers only), as HTTP specifies.
+      if (route.method !== method && !(method === "HEAD" && route.method === "GET")) {
         allowed.push(route.method);
         continue;
       }
-      const params = Object.fromEntries(route.names.map((name, index) => [name, decodeURIComponent(result[index + 1])]));
+      const params = Object.fromEntries(route.names.map((name, index) => [name, decodeParam(result[index + 1])]));
       return { route, params };
     }
-    return allowed.length ? { allowed } : null;
+    if (!allowed.length) return null;
+    if (allowed.includes("GET")) allowed.push("HEAD");
+    return { allowed };
   };
 }
 
-function sendJson(response, statusCode, body, headers = {}) {
+function sendJson(response, statusCode, body, headers = {}, method = "GET") {
   const payload = JSON.stringify(body);
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
     ...headers,
   });
-  response.end(payload);
+  response.end(method === "HEAD" ? undefined : payload);
 }
 
 export function healthRoute({ serviceName, environment, startedAt = new Date() }) {
@@ -74,27 +85,34 @@ export function createApp({ config, logger, routes = [], now = () => new Date(),
     const path = new URL(request.url || "/", "http://localhost").pathname;
     let statusCode = 500;
     let message;
+    let matchedRoute;
+    let logError;
 
     try {
       const found = match(method, path);
       if (!found) throw new HttpError(404, "not_found", `No existe la ruta ${path}.`);
       if (found.allowed) {
         statusCode = 405;
-        sendJson(response, 405, { error: "method_not_allowed", message: `Método ${method} no permitido en ${path}.` }, { allow: found.allowed.join(", ") });
+        logError = { code: "method_not_allowed", message: `Método ${method} no permitido en ${path}.` };
+        message = `${method} ${path} 405 method_not_allowed`;
+        sendJson(response, 405, { error: logError.code, message: logError.message }, { allow: found.allowed.join(", ") }, method);
         return;
       }
+      matchedRoute = found.route;
       const result = await found.route.handler({ request, params: found.params, path, method });
       statusCode = result?.status ?? 200;
-      sendJson(response, statusCode, result?.body ?? {}, result?.headers);
+      sendJson(response, statusCode, result?.body ?? {}, result?.headers, method);
     } catch (error) {
       if (error instanceof HttpError) {
         statusCode = error.statusCode;
+        logError = { code: error.code, message: error.message };
         message = `${method} ${path} ${statusCode} ${error.code}`;
-        sendJson(response, statusCode, { error: error.code, message: error.message });
+        sendJson(response, statusCode, { error: error.code, message: error.message }, {}, method);
       } else {
         statusCode = 500;
-        message = `${method} ${path} 500 ${error?.message || "unexpected_error"}`;
-        sendJson(response, 500, { error: "internal_error", message: "Error interno del servicio." });
+        logError = { code: "internal_error", message: error?.message || "unexpected_error" };
+        message = `${method} ${path} 500 ${logError.message}`;
+        sendJson(response, 500, { error: "internal_error", message: "Error interno del servicio." }, {}, method);
       }
     } finally {
       logger.write(buildRequestLog({
@@ -106,6 +124,9 @@ export function createApp({ config, logger, routes = [], now = () => new Date(),
         statusCode,
         durationNs: Number(clock() - startedAt),
         message,
+        route: matchedRoute?.path,
+        labels: matchedRoute?.labels,
+        error: logError,
       }));
     }
   };

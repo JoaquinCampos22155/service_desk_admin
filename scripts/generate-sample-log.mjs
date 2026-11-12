@@ -10,13 +10,21 @@ import { createCatalogRoutes } from "../api/catalog.mjs";
 import { loadConfig } from "../api/config.mjs";
 import { createLogger } from "../api/logger.mjs";
 import { createSimulator } from "../api/simulation.mjs";
-import { formatStats, runTraffic } from "./traffic-generator.mjs";
+import { formatStats, readNumber, runTraffic } from "./traffic-generator.mjs";
 
-const { values } = parseArgs({ options: { requests: { type: "string" }, rps: { type: "string" }, output: { type: "string" } } });
-const requests = Number(values.requests ?? 200);
-const requestsPerSecond = Number(values.rps ?? 20);
-const output = values.output || "logs/sample-api.log";
-if (!Number.isInteger(requests) || requests < 50) throw new Error("--requests debe ser un entero mayor o igual a 50.");
+let requests;
+let requestsPerSecond;
+let output;
+try {
+  const { values } = parseArgs({ options: { requests: { type: "string" }, rps: { type: "string" }, output: { type: "string" } } });
+  requests = readNumber("requests", values.requests, 200);
+  requestsPerSecond = readNumber("rps", values.rps, 20);
+  output = values.output || "logs/sample-api.log";
+  if (!Number.isInteger(requests) || requests < 50) throw new Error(`--requests debe ser un entero mayor o igual a 50: ${values.requests}`);
+} catch (error) {
+  console.error(`[sample] ${error.message}`);
+  process.exit(1);
+}
 
 const config = loadConfig({ ...process.env, LOG_FILE: output, LOG_TO_STDOUT: "false" });
 rmSync(output, { force: true });

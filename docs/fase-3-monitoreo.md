@@ -27,6 +27,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 | 1 | A | `feat: add simulated service API with ECS logging`: servidor, logger ECS, `/api/health` y configuración | ✅ Listo |
 | 2 | A | `feat: add catalog endpoints with error ratio and latency`: los 8 endpoints del catálogo | ✅ Listo |
 | 3 | A | `feat: add continuous traffic generator`: script de tráfico y muestra `logs/sample-api.log` (50+ líneas) | ✅ Listo |
+| 3.1 | A | `fix: harden API edge cases and enrich logs`: errores de borde, `HEAD`, campos `labels.*` y `error.*` en el log | ✅ Listo |
 | 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | Pendiente |
 | 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | Pendiente |
 | 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | Pendiente |
@@ -59,7 +60,13 @@ curl http://127.0.0.1:4000/api/inventory/SKU-501
 curl 'http://127.0.0.1:4000/api/shipping/options?zone=12'
 ```
 
-Las rutas inexistentes responden `404` y un método no permitido responde `405` con encabezado `Allow`. Un cuerpo que no sea un objeto JSON válido responde siempre `400 invalid_json`; ese error es real, no simulado, y uno mayor de 64 KB responde `413`. Todos estos casos también se registran en el log.
+Las rutas inexistentes responden `404` y un método no permitido responde `405` con encabezado `Allow`. Las rutas `GET` también aceptan `HEAD` (mismos encabezados, sin cuerpo). Estos errores son reales, no simulados:
+
+- Un cuerpo que no sea un objeto JSON válido responde `400 invalid_json`.
+- Un parámetro con codificación inválida (por ejemplo `/api/inventory/%E0%A4%A`) responde `400 invalid_path`.
+- Un cuerpo mayor de 64 KB responde `413`.
+
+Todos estos casos también se registran en el log.
 
 ## Simulación de errores y latencia
 
@@ -72,7 +79,7 @@ Las rutas inexistentes responden `404` y un método no permitido responde `405` 
 
 Prueba local con 400 peticiones (8 endpoints × 50) y la configuración por defecto: 331 éxitos (83%), 50 errores 4xx (12.5%) y 19 errores 5xx (4.75%). Promedios de latencia: inventario ~78 ms, opciones de envío ~132 ms, configuraciones y productos ~160–180 ms, tiendas ~327 ms, pedidos ~460 ms y pagos ~623 ms, con picos de hasta ~2 s.
 
-`GET /api/health` responde `{"status":"up","service":...,"environment":...,"uptimeSeconds":...,"timestamp":...}`. Lo usará Heartbeat. Estas peticiones también se registran; en Kibana se pueden excluir con el filtro `NOT url.path : "/api/health"` si distorsionan el top de endpoints.
+`GET /api/health` (o `HEAD /api/health`) responde `{"status":"up","service":...,"environment":...,"uptimeSeconds":...,"timestamp":...}`. Lo usará Heartbeat. Estas peticiones también se registran; en Kibana se pueden excluir con el filtro `NOT url.path : "/api/health"` si distorsionan el top de endpoints.
 
 ## Generador de tráfico
 
@@ -111,7 +118,7 @@ pnpm logs:sample                            # 200 peticiones a ~20 req/s
 pnpm logs:sample -- --requests 500 --rps 25
 ```
 
-El script levanta la API real dentro del mismo proceso, en un puerto libre y con la configuración por defecto, la recorre con el generador y llama a `/api/health` cada 2 s como haría Heartbeat. Las líneas las escribe la propia API; no se fabrican a mano. La muestra actual tiene **205 registros**: 175 `info`, 17 `warn` y 13 `error`, con todos los campos obligatorios, todos los endpoints del catálogo y `/api/health`. Es el único archivo de `logs/` que se versiona.
+El script levanta la API real dentro del mismo proceso, en un puerto libre y con la configuración por defecto, la recorre con el generador y llama a `/api/health` cada 2 s como haría Heartbeat. Las líneas las escribe la propia API; no se fabrican a mano. La muestra actual tiene **205 registros**: 170 `info`, 26 `warn` y 9 `error`, con todos los campos obligatorios, `labels.*`, `error.code` en cada fallo, todos los endpoints del catálogo y `/api/health`. Es el único archivo de `logs/` que se versiona.
 
 ## Ejecutar la API
 
@@ -147,8 +154,10 @@ La configuración se valida al arrancar: las tasas deben estar entre 0 y 1, y `C
 Cada petición HTTP produce **una línea JSON** (NDJSON) en `logs/api.log`, y también en stdout. Los nombres de los campos siguen [Elastic Common Schema (ECS)](https://www.elastic.co/guide/en/ecs/current/index.html) como **objetos anidados**, de modo que `http.request.method` en Kibana corresponde a `{"http":{"request":{"method":...}}}`.
 
 ```json
-{"@timestamp":"2026-11-12T02:53:43.481Z","log":{"level":"warn","logger":"http"},"message":"GET /nope 404 not_found","ecs":{"version":"8.11.0"},"service":{"name":"bevstack-ecommerce-api","environment":"local"},"event":{"kind":"event","category":["web"],"type":["access"],"outcome":"failure","duration":250167},"http":{"request":{"method":"GET"},"response":{"status_code":404}},"url":{"path":"/nope"}}
+{"@timestamp":"2026-11-12T03:10:38.834Z","log":{"level":"error","logger":"http"},"message":"GET /api/inventory/SKU-502 502 inventory_feed_error","ecs":{"version":"8.11.0"},"service":{"name":"bevstack-ecommerce-api","environment":"local"},"event":{"kind":"event","category":["web"],"type":["access"],"outcome":"failure","duration":54712916},"http":{"request":{"method":"GET"},"response":{"status_code":502}},"url":{"path":"/api/inventory/SKU-502"},"labels":{"route":"/api/inventory/:sku","catalog_item":"incorrect-inventory","catalog_type":"Incidente"},"error":{"code":"inventory_feed_error","message":"El feed de inventario del retailer falló."}}
 ```
+
+Los 7 campos obligatorios de la fase son los primeros de la tabla. Los demás son opcionales y sirven para un dashboard más útil.
 
 | Campo | Significado |
 |---|---|
@@ -161,11 +170,16 @@ Cada petición HTTP produce **una línea JSON** (NDJSON) en `logs/api.log`, y ta
 | `log.level` | `info` para 1xx–3xx, `warn` para 4xx y `error` para 5xx. |
 | `event.outcome` | `success` si el código es menor que 400; si no, `failure`. Sirve para calcular el error rate. |
 | `message` | Resumen legible: método, ruta, código y, en errores, el código interno. |
+| `labels.route` | Plantilla de la ruta que atendió la petición (`/api/inventory/:sku`). Agrupa las variantes de `url.path` y es el mejor campo para el **top de endpoints**. No aparece en rutas inexistentes (404). |
+| `labels.catalog_item` | `id` del elemento del catálogo de la Fase 1 (`incorrect-inventory`, `new-store`, …). Solo en los 8 endpoints del catálogo. |
+| `labels.catalog_type` | `Incidente` o `Solicitud`, como en la Fase 1. Permite separar ambas colas en el dashboard (tráfico, errores o latencia por tipo). |
+| `error.code` | Código interno del error (`payment_gateway_error`, `not_found`, …). Aparece en toda respuesta 4xx/5xx y nunca en las exitosas. Permite ver qué proveedor o causa falla más. |
+| `error.message` | Descripción del error. |
 
 Notas para quien configure Filebeat (commit 4):
 
 - Usar el input `filestream` con el parser `ndjson` y `target: ""`, para que los campos queden en la raíz del documento y no bajo `json.*`.
-- Mapear `event.duration` como `long`, `http.response.status_code` como `long` o `short` y `url.path` como `keyword`, para que funcionen el promedio, la distribución por código y el top de endpoints.
+- Mapear `event.duration` como `long`, `http.response.status_code` como `long` o `short`, y `url.path`, `labels.*` y `error.code` como `keyword`, para que funcionen el promedio, la distribución por código y el top de endpoints.
 - `@timestamp` ya viene en el log y debe conservarse (no sustituirlo por la hora de ingesta).
 
 ## Estructura del código
@@ -173,18 +187,19 @@ Notas para quien configure Filebeat (commit 4):
 | Archivo | Responsabilidad |
 |---|---|
 | `api/config.mjs` | Lee y valida las variables de entorno (`loadConfig`). |
-| `api/logger.mjs` | `buildRequestLog` arma el documento ECS; `createLogger` escribe NDJSON en el archivo y stdout; `levelForStatus` decide el nivel. |
-| `api/app.mjs` | Router con parámetros (`/api/stores/:id`), respuestas JSON, `HttpError` para 4xx/5xx controlados, ruta `/api/health` y el registro automático de cada petición en un bloque `finally`, de modo que también se registran los errores y las excepciones. |
+| `api/logger.mjs` | `buildRequestLog` arma el documento ECS (incluidos `labels.*` y `error.*`); `createLogger` escribe NDJSON en el archivo y stdout; `levelForStatus` decide el nivel. |
+| `api/app.mjs` | Router con parámetros (`/api/stores/:id`) y `HEAD` sobre rutas `GET`, respuestas JSON, `HttpError` para 4xx/5xx controlados, ruta `/api/health` y el registro automático de cada petición en un bloque `finally`, de modo que también se registran los errores y las excepciones. Cada ruta puede declarar `labels`, que se copian al log. |
 | `api/simulation.mjs` | `createSimulator`: latencia variable, picos lentos y elección de éxito, 4xx o 5xx según la configuración. `seededRandom` da secuencias reproducibles para las pruebas. |
 | `api/catalog.mjs` | `CATALOG_ENDPOINTS` (los 8 endpoints, con latencia, errores posibles y respuesta de éxito) y `createCatalogRoutes`, que los convierte en rutas. También lee el cuerpo JSON (`readJsonBody`). |
-| `api/server.mjs` | Punto de entrada: arma configuración, logger, simulador y rutas; cierra ordenadamente con `SIGINT`/`SIGTERM`. |
+| `api/server.mjs` | Punto de entrada: arma configuración, logger, simulador y rutas; cierra ordenadamente con `SIGINT`/`SIGTERM`. Si el puerto está ocupado, la configuración es inválida o no puede escribir el log, termina con un mensaje claro y código 1. |
+| `tests/api-server.test.mjs` | Pruebas del arranque: puerto ocupado, log no escribible y configuración inválida. |
 | `tests/api.test.mjs` | Pruebas con `node:test`: configuración, formato del log, salud, 404, 405, parámetros y errores. |
 | `tests/api-catalog.test.mjs` | Pruebas del catálogo: correspondencia con la Fase 1, proporción de errores, latencia, éxitos, 4xx y 5xx forzados, y JSON inválido. |
 | `scripts/traffic-generator.mjs` | Generador de tráfico continuo (`pnpm traffic`). Exporta `buildRequest`, `runTraffic`, `parseCliOptions` y `formatStats` para las pruebas. |
 | `scripts/generate-sample-log.mjs` | Regenera `logs/sample-api.log` (`pnpm logs:sample`). |
 | `tests/traffic-generator.test.mjs` | Pruebas del generador: cobertura de los 8 endpoints, métodos, tráfico contra la API real con una línea de log por petición, API caída, detención y opciones. |
 
-Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.
+Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`; sus `labels` se generan solos. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler, labels? }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.
 
 ## Pruebas
 

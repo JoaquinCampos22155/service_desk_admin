@@ -1,14 +1,38 @@
 import { createServer } from "node:http";
 import { createApp } from "./app.mjs";
 import { createCatalogRoutes } from "./catalog.mjs";
-import { loadConfig } from "./config.mjs";
+import { ApiConfigError, loadConfig } from "./config.mjs";
 import { createLogger } from "./logger.mjs";
 import { createSimulator } from "./simulation.mjs";
 
-const config = loadConfig();
-const logger = createLogger({ file: config.logFile, writeToStdout: config.logToStdout });
+function fail(message) {
+  console.error(`[api] ${message}`);
+  process.exit(1);
+}
+
+let config;
+try {
+  config = loadConfig();
+} catch (error) {
+  fail(error instanceof ApiConfigError ? `Configuración inválida: ${error.message}` : error.message);
+}
+
+const logFileError = (error) => fail(`No se pudo escribir el log en ${config.logFile}: ${error.code || error.message}. Revisa LOG_FILE y los permisos de la carpeta.`);
+let logger;
+try {
+  logger = createLogger({ file: config.logFile, writeToStdout: config.logToStdout, onError: logFileError });
+} catch (error) {
+  logFileError(error);
+}
+
 const simulator = createSimulator(config.simulation);
 const server = createServer(createApp({ config, logger, routes: createCatalogRoutes({ simulator }) }));
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") fail(`El puerto ${config.port} ya está en uso. Detén el otro proceso o usa otro puerto: PORT=4001 pnpm api`);
+  if (error.code === "EACCES") fail(`Sin permiso para escuchar en ${config.host}:${config.port}. Usa un puerto mayor que 1024.`);
+  fail(`El servidor falló: ${error.message}`);
+});
 
 server.listen(config.port, config.host, () => {
   const { clientErrorRate, serverErrorRate } = config.simulation;

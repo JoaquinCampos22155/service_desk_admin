@@ -63,6 +63,18 @@ En el Static Site `bevstack-service-desk`, abre **Environment** y agrega `VITE_S
 
 Si quieres que el resumen y las gráficas tengan datos iniciales, abre [`supabase/seeds/demo_tickets.sql`](supabase/seeds/demo_tickets.sql), copia su contenido en **Supabase → SQL Editor → New query** y ejecútalo. Inserta 24 tickets ficticios fechados dentro de los últimos siete días, con marcas y consumidores de demostración, sin información personal real. Los IDs `DEMO-` evitan duplicados si vuelves a ejecutar el script. Estos registros quedan en la base compartida y cuentan en las métricas; para retirarlos, el archivo incluye una consulta de limpieza comentada que puedes ejecutar por separado.
 
+## Fase 3: monitoreo con ELK
+
+La carpeta `api/` contiene una API simulada del servicio de e-commerce de Bevstack: un endpoint por cada elemento del catálogo de la Fase 1, con errores 4xx/5xx en una proporción configurable y latencia variable. Cada petición queda registrada automáticamente en `logs/api.log` en formato JSON (ECS), listo para Filebeat, Elasticsearch y Kibana. Es independiente del Service Desk y no usa Supabase.
+
+```powershell
+pnpm api            # API en http://127.0.0.1:4000
+pnpm traffic        # en otra terminal: tráfico continuo hacia la API (Ctrl+C para detener)
+pnpm logs:sample    # regenera la muestra entregable logs/sample-api.log
+```
+
+La arquitectura, los endpoints, la proporción de errores, el formato de los logs y el estado del trabajo están en [docs/fase-3-monitoreo.md](docs/fase-3-monitoreo.md).
+
 ## Pruebas
 
 Opcionalmente, con Node.js instalado, ejecuta la suite desde la raíz del repositorio:

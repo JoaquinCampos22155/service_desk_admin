@@ -116,7 +116,7 @@ export async function runTraffic({
   return { stats, elapsedMs: Date.now() - startedAt };
 }
 
-function readNumber(name, value, fallback) {
+export function readNumber(name, value, fallback) {
   if (value === undefined) return fallback;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw new Error(`--${name} debe ser un número mayor o igual a 0: ${value}`);

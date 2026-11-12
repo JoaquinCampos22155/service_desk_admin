@@ -159,6 +159,7 @@ export function createCatalogRoutes({ simulator, endpoints = CATALOG_ENDPOINTS }
   return endpoints.map((endpoint) => ({
     method: endpoint.method,
     path: endpoint.path,
+    labels: { catalog_item: endpoint.id, catalog_type: endpoint.type },
     async handler({ request, params }) {
       // Malformed JSON is a real (not simulated) 400 so clients get honest feedback.
       const body = BODY_METHODS.has(endpoint.method) ? await readJsonBody(request) : {};
