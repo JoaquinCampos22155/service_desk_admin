@@ -21,6 +21,7 @@ Proyecto del curso **CC3047 · Administración y Mantenimiento de Sistemas (UVG)
 - Un push a `main` despliega el frontend en Render. No rompas `pnpm build`.
 - No pongas claves secretas ni `service_role` de Supabase en variables `VITE_` ni en el repo.
 - Al terminar un paso de la Fase 3, actualiza la tabla de estado en [docs/fase-3-monitoreo.md](docs/fase-3-monitoreo.md).
+- Si cambias el dashboard en Kibana, vuelve a exportarlo a `kibana/dashboard.ndjson` (comando en la guía) y corre `pnpm test`: `tests/kibana-dashboard.test.mjs` verifica que conserve las 6 visualizaciones requeridas.
 
 ## Comandos
 
@@ -30,7 +31,8 @@ pnpm dev            # frontend Service Desk (Vite)
 pnpm api            # API simulada en http://127.0.0.1:4000, logs en logs/api.log
 pnpm traffic        # generador de tráfico continuo contra la API (Ctrl+C para detener)
 pnpm logs:sample    # regenera logs/sample-api.log (muestra entregable)
-docker compose up -d   # stack ELK local: Kibana en http://localhost:5601 (ver docs/fase-3-monitoreo.md)
+docker compose up -d   # stack ELK local + dashboard: http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring
+pnpm kibana:import  # reimporta kibana/dashboard.ndjson en Kibana
 pnpm test           # todas las pruebas (node:test)
 pnpm build          # build del frontend
 ```

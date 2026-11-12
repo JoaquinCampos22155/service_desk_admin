@@ -111,6 +111,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Tarea de un solo uso: importa el dashboard de Kibana (kibana/dashboard.ndjson) y termina.
+  kibana-setup:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "scripts/kibana-import.mjs", "--url", "http://kibana:5601"]
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./kibana:/app/kibana:ro
+    depends_on:
+      kibana:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   esdata:
   filebeat-data:

@@ -73,7 +73,9 @@ pnpm traffic        # en otra terminal: tráfico continuo hacia la API (Ctrl+C p
 pnpm logs:sample    # regenera la muestra entregable logs/sample-api.log
 ```
 
-Para el monitoreo completo, con Docker Desktop activo, `docker compose up -d` levanta Elasticsearch, Kibana, Filebeat, Heartbeat, la API y el generador de tráfico. Kibana queda en [http://localhost:5601](http://localhost:5601).
+Para el monitoreo completo, con Docker Desktop activo, `docker compose up -d` levanta Elasticsearch, Kibana, Filebeat, Heartbeat, la API y el generador de tráfico. El dashboard se importa solo y queda en [http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring](http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring).
+
+El informe técnico de la fase está en [docs/informe-fase-3.md](docs/informe-fase-3.md).
 
 La arquitectura, los endpoints, la proporción de errores, el formato de los logs y el estado del trabajo están en [docs/fase-3-monitoreo.md](docs/fase-3-monitoreo.md).
 

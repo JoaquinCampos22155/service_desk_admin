@@ -2,6 +2,17 @@
 
 Guía técnica de la Fase 3 del curso CC3047 (UVG). Explica qué se construye, por qué y cómo funciona cada pieza. Se actualiza en cada commit de la fase.
 
+## Entregables (dónde está cada uno)
+
+| Entregable del enunciado | Archivo |
+|---|---|
+| Configuración ELK (`docker-compose.yml` con Elasticsearch, Kibana, Filebeat y Heartbeat) | [`docker-compose.yml`](../docker-compose.yml), [`elk/filebeat.yml`](../elk/filebeat.yml) |
+| Logs de la API (`.log` con al menos 50 registros) | [`logs/sample-api.log`](../logs/sample-api.log) (205 registros) |
+| Heartbeat (`heartbeat.yml`) | [`elk/heartbeat.yml`](../elk/heartbeat.yml) |
+| Dashboard de Kibana (captura) | [`docs/img/dashboard-kibana.png`](img/dashboard-kibana.png) y el export [`kibana/dashboard.ndjson`](../kibana/dashboard.ndjson) |
+| Informe técnico | [`docs/informe-fase-3.md`](informe-fase-3.md) |
+| Generador de tráfico | [`scripts/traffic-generator.mjs`](../scripts/traffic-generator.mjs) |
+
 ## Qué pide la fase
 
 - Una API cuyos logs se generan automáticamente desde el código, con los campos `@timestamp`, `http.request.method`, `http.response.status_code`, `event.duration`, `url.path`, `service.name` y `log.level`.
@@ -30,7 +41,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 | 3.1 | A | `fix: harden API edge cases and enrich logs`: errores de borde, `HEAD`, campos `labels.*` y `error.*` en el log | ✅ Listo |
 | 4 | B | `feat: add ELK stack with Filebeat`: `docker-compose.yml` y `filebeat.yml` | ✅ Listo |
 | 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | ✅ Listo |
-| 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | Pendiente |
+| 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | ✅ Listo |
 
 Todo corre **en local**; no se despliega nada nuevo en Render.
 
@@ -195,6 +206,7 @@ Los 7 campos obligatorios de la fase son los primeros de la tabla. Los demás so
 | `traffic` | `node:22-alpine` | El generador de tráfico continuo contra `http://api:4000` (~5 req/s; cambia con `TRAFFIC_RPS`). |
 | `filebeat` | `filebeat:8.19.5` | Lee `logs/api.log` con la configuración `elk/filebeat.yml` y envía cada línea a Elasticsearch. |
 | `heartbeat` | `heartbeat:8.19.5` | Consulta `http://api:4000/api/health` cada 10 s con `elk/heartbeat.yml` y registra `up`/`down` y el tiempo de respuesta. |
+| `kibana-setup` | `node:22-alpine` | Tarea de un solo uso: espera a Kibana, importa `kibana/dashboard.ndjson` y termina (`exited 0`). |
 
 Los servicios arrancan en orden con *healthchecks*: Kibana y Filebeat esperan a que Elasticsearch esté sano, y el generador espera a la API. El healthcheck de la API es TCP, así que no agrega líneas al log.
 
@@ -225,6 +237,58 @@ Variables opcionales al levantar: `TRAFFIC_RPS=10`, `SERVER_ERROR_RATE=0.4` (sim
 | `event.duration`, `http.response.status_code` | `long` |
 | `http.request.method`, `service.name`, `log.level`, `labels.route`, `labels.catalog_type`, `error.code` | `keyword` |
 | `url.path` | `wildcard` (agregable) |
+
+### Dashboard de Kibana
+
+El dashboard **"Bevstack · Monitoreo de la API (Fase 3)"** se importa solo al levantar el stack (servicio `kibana-setup`) y queda en:
+
+**http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring**
+
+Por defecto muestra los últimos 15 minutos y se refresca cada 10 s. Usa dos data views, `Bevstack API · logs (filebeat-*)` y `Bevstack API · Heartbeat (heartbeat-*)`. Captura: [`docs/img/dashboard-kibana.png`](img/dashboard-kibana.png).
+
+| Fila | Panel | Fuente y cálculo |
+|---|---|---|
+| KPIs | Estado del sistema (último chequeo) | Último `monitor.status` (Heartbeat). |
+| | Disponibilidad | `count(kql='monitor.status : "up"') / count()`: rojo < 95 %, amarillo < 99 %, verde ≥ 99 %. |
+| | Peticiones totales | Conteo de logs. |
+| | Error rate (4xx + 5xx) | `count(kql='http.response.status_code >= 400') / count()`: verde < 25 %, amarillo < 40 %, rojo ≥ 40 %. Con la configuración por defecto (20 % de errores) queda en verde. |
+| | Tiempo de respuesta promedio | `average(event.duration) / 1000000` (ms): verde < 400, amarillo < 800, rojo ≥ 800. |
+| Tiempo | **Tráfico de peticiones** | Barras por intervalo, apiladas por `labels.catalog_type` (Incidente/Solicitud). |
+| | **Tiempo de respuesta promedio** | Línea de la latencia promedio (ms). |
+| | **Estado del sistema (up / down)** | Chequeos de Heartbeat por intervalo: verde `up`, rojo `down`. |
+| | **Error rate en el tiempo** | Línea del % de respuestas 4xx/5xx. |
+| Análisis | **Distribución por códigos HTTP** | Dona por `http.response.status_code`. |
+| | **Top endpoints (rutas más consultadas)** | Top 10 de `labels.route`. |
+| | Errores por causa | Top de `error.code` (proveedor caído, validación, etc.). |
+| Detalle | Detalle por endpoint | Tabla: endpoint, tipo, peticiones, latencia promedio y error rate. |
+
+Los paneles en negrita son las 6 visualizaciones mínimas del enunciado.
+
+Para reimportar el dashboard a mano, por ejemplo después de `docker compose down -v` o tras editarlo:
+
+```bash
+pnpm kibana:import                       # contra http://localhost:5601
+docker compose run --rm kibana-setup     # o desde Docker
+```
+
+Para guardar cambios hechos en Kibana dentro del repo, exporta de nuevo el dashboard con sus data views:
+
+```bash
+curl -s -X POST localhost:5601/api/saved_objects/_export -H 'kbn-xsrf: true' -H 'content-type: application/json' \
+  -d '{"objects":[{"type":"dashboard","id":"bevstack-api-monitoring"}],"includeReferencesDeep":true}' > kibana/dashboard.ndjson
+```
+
+Para la captura del informe se usó Chrome *headless*, una vez que la ventana de 15 minutos tenía datos:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars \
+  --window-size=1800,1950 --virtual-time-budget=45000 --screenshot=docs/img/dashboard-kibana.png \
+  "http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring?_g=(time:(from:now-15m,to:now))"
+```
+
+### Informe técnico
+
+[`docs/informe-fase-3.md`](informe-fase-3.md) es el informe entregable: arquitectura, configuración, endpoints, proporción de errores, generador de tráfico, dashboard, resultados medidos, prueba de caída, evidencias y cumplimiento de la rúbrica.
 
 ### Comprobar que los logs llegan
 
@@ -274,9 +338,14 @@ Prueba local: con el stack recién levantado, a los ~30 s ya había 286 document
 | `tests/api-catalog.test.mjs` | Pruebas del catálogo: correspondencia con la Fase 1, proporción de errores, latencia, éxitos, 4xx y 5xx forzados, y JSON inválido. |
 | `scripts/traffic-generator.mjs` | Generador de tráfico continuo (`pnpm traffic`). Exporta `buildRequest`, `runTraffic`, `parseCliOptions` y `formatStats` para las pruebas. |
 | `scripts/generate-sample-log.mjs` | Regenera `logs/sample-api.log` (`pnpm logs:sample`). |
-| `docker-compose.yml` | Stack local: Elasticsearch, Kibana, Filebeat, Heartbeat, la API y el generador de tráfico. |
+| `docker-compose.yml` | Stack local: Elasticsearch, Kibana, Filebeat, Heartbeat, la API, el generador de tráfico y la importación del dashboard. |
 | `elk/filebeat.yml` | Configuración de Filebeat (input `filestream` + parser `ndjson`). |
 | `elk/heartbeat.yml` | Monitor de Heartbeat sobre `/api/health`. |
+| `kibana/dashboard.ndjson` | Export del dashboard y sus dos data views (Kibana 8.19.5). |
+| `scripts/kibana-import.mjs` | Importa el dashboard (`pnpm kibana:import` o el servicio `kibana-setup`). |
+| `tests/kibana-dashboard.test.mjs` | Verifica que el export tenga las 6 visualizaciones requeridas, los campos correctos y referencias válidas, y prueba el script de importación. |
+| `docs/informe-fase-3.md` | Informe técnico entregable. |
+| `docs/img/dashboard-kibana.png` | Captura del dashboard. |
 | `tests/traffic-generator.test.mjs` | Pruebas del generador: cobertura de los 8 endpoints, métodos, tráfico contra la API real con una línea de log por petición, API caída, detención y opciones. |
 
 Para agregar un endpoint del catálogo, se agrega un objeto a `CATALOG_ENDPOINTS` con `id`, `name`, `type`, `method`, `path`, `latency`, `clientErrors`, `serverErrors` y `success`; sus `labels` se generan solos. Para una ruta fuera del catálogo, se pasa a `createApp({ routes })` un objeto `{ method, path, handler, labels? }`. El handler recibe `{ request, params, path, method }` y devuelve `{ status, body, headers? }`, o lanza `new HttpError(status, code, message)`. En ambos casos el registro del log es automático.
