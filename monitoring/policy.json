@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "serviceName": "bevstack-ecommerce-api",
+  "monitorId": "bevstack-api-health",
+  "intervalSeconds": 10,
+  "windowSeconds": 300,
+  "freshnessSeconds": 45,
+  "trafficGapSeconds": 60,
+  "startupGraceSeconds": 60,
+  "expectedTraffic": true,
+  "activationEvaluations": 2,
+  "recoveryEvaluations": 2,
+  "globalMinimum": 100,
+  "routeMinimum": 50,
+  "globalServerRate": 0.3,
+  "routeServerRate": 0.1,
+  "clientRate": 0.3,
+  "latencyTargetsMs": {
+    "/api/stores": 1000,
+    "/api/stores/:storeId/shipping-rules": 750,
+    "/api/products/:sku": 750,
+    "/api/stores/:storeId/operational-config": 750,
+    "/api/orders": 1200,
+    "/api/inventory/:sku": 350,
+    "/api/payments": 1500,
+    "/api/shipping/options": 500
+  },
+  "globalServerRecoveryRate": 0.15,
+  "routeServerRecoveryRate": 0.08,
+  "clientRecoveryRate": 0.24
+}

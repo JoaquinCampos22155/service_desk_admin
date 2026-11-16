@@ -59,6 +59,8 @@ services:
       - SERVICE_ENVIRONMENT=docker
       - CLIENT_ERROR_RATE=${CLIENT_ERROR_RATE:-0.15}
       - SERVER_ERROR_RATE=${SERVER_ERROR_RATE:-0.05}
+      - SLOW_REQUEST_RATE=${SLOW_REQUEST_RATE:-0.05}
+      - LATENCY_SCALE=${LATENCY_SCALE:-1}
     ports:
       - "4000:4000"
     volumes:
@@ -111,6 +113,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Evaluación local: no crea tickets ni envía mensajes a terceros.
+  observer:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "monitoring/observer.mjs"]
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - MONITORING_STATE_FILE=/state/state.json
+      - EXPECTED_TRAFFIC=${EXPECTED_TRAFFIC:-true}
+    volumes:
+      - ./monitoring:/app/monitoring:ro
+      - monitoring-state:/state
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://elasticsearch:9200/bevstack-monitoring-current',{method:'HEAD'}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   # Tarea de un solo uso: importa el dashboard de Kibana (kibana/dashboard.ndjson) y termina.
   kibana-setup:
     image: node:22-alpine
@@ -122,8 +147,11 @@ services:
     depends_on:
       kibana:
         condition: service_healthy
+      observer:
+        condition: service_healthy
     restart: "no"
 
 volumes:
   esdata:
   filebeat-data:
+  monitoring-state:
