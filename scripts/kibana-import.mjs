@@ -50,6 +50,11 @@ async function main() {
   const file = values.file || "kibana/dashboard.ndjson";
   await waitForKibana(baseUrl, { log: console.log });
   const result = await importSavedObjects(baseUrl, file);
+  const settings = await fetch(new URL('/api/kibana/settings', baseUrl), {
+    method: 'POST', headers: { 'kbn-xsrf': 'true', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ changes: { 'dateFormat:tz': 'UTC' } }),
+  });
+  if (!settings.ok) throw new Error(`No se pudo configurar la zona UTC: ${settings.status}`);
   for (const item of result.successResults || []) console.log(`[kibana] importado ${item.type}: ${item.meta?.title || item.id}`);
   console.log(`[kibana] listo: ${baseUrl}/app/dashboards#/view/${DASHBOARD_ID}`);
 }

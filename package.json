@@ -14,7 +14,9 @@
     "kibana:import": "node scripts/kibana-import.mjs",
     "build": "vite build",
     "test": "node --test",
-    "test:db": "supabase test db"
+    "test:db": "supabase test db",
+    "monitoring:dashboard": "node scripts/build-monitoring-dashboard.mjs",
+    "monitoring:observer": "node monitoring/observer.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0"

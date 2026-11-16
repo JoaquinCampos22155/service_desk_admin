@@ -8,7 +8,7 @@ const DASHBOARD_FILE = fileURLToPath(new URL("../kibana/dashboard.ndjson", impor
 const objects = readFileSync(DASHBOARD_FILE, "utf8").split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line)).filter((object) => object.type);
 const dashboard = objects.find((object) => object.type === "dashboard");
 const panels = JSON.parse(dashboard.attributes.panelsJSON);
-const lensStates = panels.map((panel) => panel.embeddableConfig.attributes);
+const lensStates = panels.filter((panel) => panel.type === "lens").map((panel) => panel.embeddableConfig.attributes);
 
 function columnsOf(attributes) {
   return Object.values(attributes.state.datasourceStates.formBased.layers).flatMap((layer) => Object.values(layer.columns));
@@ -17,7 +17,7 @@ function columnsOf(attributes) {
 test("export contains both data views and the dashboard", () => {
   assert.equal(dashboard.id, DASHBOARD_ID);
   const dataViews = objects.filter((object) => object.type === "index-pattern").map((object) => object.attributes.title).sort();
-  assert.deepEqual(dataViews, ["filebeat-*", "heartbeat-*"]);
+  assert.deepEqual(dataViews, ["bevstack-monitoring-current", "filebeat-*", "heartbeat-*"]);
 });
 
 test("dashboard has the six visualizations required by the phase", () => {
@@ -33,19 +33,19 @@ test("visualizations use the logged ECS fields and Heartbeat status", () => {
     assert.ok(fields.has(field), `ningún panel usa ${field}`);
   }
   const formulas = lensStates.flatMap(columnsOf).filter((column) => column.operationType === "formula").map((column) => column.params.formula);
-  assert.ok(formulas.includes("count(kql='http.response.status_code >= 400') / count()"), "error rate formula");
+  assert.ok(formulas.includes("count(kql='http.response.status_code >= 500') / count()"), "error rate formula");
   assert.ok(formulas.includes("average(event.duration) / 1000000"), "latency in ms formula");
 });
 
 test("every panel layer has a matching data view reference on the dashboard", () => {
   const referenceNames = new Set(dashboard.references.map((reference) => reference.name));
   const dataViewIds = new Set(objects.filter((object) => object.type === "index-pattern").map((object) => object.id));
-  for (const panel of panels) {
+  for (const panel of panels.filter((p) => p.type === "lens")) {
     for (const layerId of Object.keys(panel.embeddableConfig.attributes.state.datasourceStates.formBased.layers)) {
       assert.ok(referenceNames.has(`${panel.panelIndex}:indexpattern-datasource-layer-${layerId}`), `${panel.title}: falta la referencia`);
     }
   }
-  assert.ok(dashboard.references.every((reference) => dataViewIds.has(reference.id)));
+  assert.ok(dashboard.references.every((reference) => dataViewIds.has(reference.id) || objects.some((o) => o.type === reference.type && o.id === reference.id)));
 });
 
 test("waitForKibana returns once Kibana reports available", async () => {
@@ -75,4 +75,31 @@ test("importSavedObjects posts the NDJSON with overwrite and reports failures", 
 
   const failing = async () => new Response(JSON.stringify({ success: false, errors: [{ type: "dashboard", id: "x", error: { type: "conflict" } }] }), { status: 200 });
   await assert.rejects(importSavedObjects("http://kibana:5601", DASHBOARD_FILE, { fetchImpl: failing }), /dashboard\/x: conflict/);
+});
+
+
+test("operational dashboard separates errors, exposes freshness and prioritizes actions", () => {
+  const allColumns = lensStates.flatMap(columnsOf);
+  assert.ok(allColumns.some((c) => c.operationType === "percentile" && c.params.percentile === 95 && c.filter.query.includes("< 400")));
+  assert.ok(allColumns.some((c) => c.sourceField === "alert.priority"));
+  assert.ok(allColumns.some((c) => c.sourceField === "alert.action"));
+  assert.ok(allColumns.some((c) => c.sourceField === "alert.evidence"));
+  assert.ok(allColumns.some((c) => c.sourceField === "alert.owner"));
+  assert.equal(panels.filter((p) => /UTC/.test(p.title)).length, 3);
+  for (const s of lensStates) assert.notEqual(s.state.visualization.fittingFunction, "Linear");
+  const guide = objects.filter((o) => o.type === "visualization").map((o) => o.attributes.visState).join(" ");
+  assert.match(guide, /Account Management/);
+  assert.match(guide, /provisional/);
+  assert.match(guide, /Sin datos no se declara recuperación/);
+});
+
+test("tables keep a visualization entry for every independent datasource column", () => {
+  for (const a of lensStates.filter((s) => s.visualizationType === 'lnsDatatable')) {
+    const layers = Object.values(a.state.datasourceStates.formBased.layers);
+    for (const l of layers) {
+      const referenced = new Set(Object.values(l.columns).flatMap((c) => c.references || []));
+      const visible = new Set(a.state.visualization.columns.map((c) => c.columnId));
+      for (const id of Object.keys(l.columns)) if (!referenced.has(id)) assert.ok(visible.has(id), `${a.title}: missing table configuration for ${id}`);
+    }
+  }
 });
