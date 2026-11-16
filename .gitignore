@@ -11,3 +11,7 @@ logs/*.log
 # Material de entregas (PDFs con credenciales, copias del repo): no versionar
 *.pdf
 *.zip
+
+# Archivos finales verificados de Fase 3 solicitados para publicar.
+!docs/entrega-fase-3/Informe-tecnico-Fase-3-Bevstack.pdf
+!docs/entrega-fase-3/Entrega-Fase-3-Bevstack.zip
