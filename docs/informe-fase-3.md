@@ -1,240 +1,137 @@
-# Informe técnico · Fase 3: Monitoreo con ELK
+# Informe técnico de monitoreo de Bevstack Fase 3
 
-**Servicio:** Operación de e-commerce para marcas en Bevstack
-**Curso:** CC3047 · Administración y Mantenimiento de Sistemas · Universidad del Valle de Guatemala · Semestre II, 2026
-**Catedrático:** Vinicio Paz
-**Integrantes:** Julio García Salas · Sofía García · Joaquín Campos · Carlos Valladares
+Universidad del Valle de Guatemala · Campus Central
 
----
+CC3047 Administración y Mantenimiento de Sistemas · Semestre II 2026
 
-## 1. Objetivo
+Catedrático: Vinicio Paz
 
-Construir un entorno de observabilidad básico con el stack ELK que permita al personal de soporte ver la salud del servicio definido en la Fase 1. El dashboard de Kibana se alimenta con logs reales generados automáticamente por la API del servicio y con un monitor de disponibilidad de Heartbeat.
+Integrantes: Julio García Salas, Sofía García, Joaquín Campos y Carlos Valladares
 
-Cada grupo debía visualizar en tiempo real tres aspectos:
+Fecha de validación: 15 de noviembre de 2026
 
-- El comportamiento de las APIs.
-- Las métricas de desempeño y salud.
-- La disponibilidad y el tiempo de respuesta del servicio principal.
+## Objetivo y alcance
 
-## 2. Servicio monitoreado y vía elegida
+El entorno permite observar la API simulada del servicio de e-commerce de Bevstack, detectar señales que requieren atención y asignar un responsable y un siguiente paso. Conserva las seis visualizaciones de la Fase 3 y añade prioridades técnicas, control de frescura y percentiles de latencia. La prioridad comercial se valida con Account Management según impacto y urgencia.
 
-El servicio de la Fase 1 permite a las marcas operar sus ventas en línea mediante Bevstack: pedidos, pagos, inventario, disponibilidad de productos y reglas de envío. Su catálogo tiene ocho elementos, cuatro solicitudes y cuatro incidentes. El Service Desk web de la Fase 2 es el canal de atención, no el servicio que se monitorea.
+La vía elegida es la API simulada autorizada en la ampliación del enunciado. Expone un endpoint por cada elemento del catálogo de la Fase 1. El generador hace peticiones HTTP reales y la API escribe automáticamente sus logs. No representa transacciones reales de Bevstack ni modifica el Service Desk de la Fase 2.
 
-Bevstack no cuenta con una API propia construida por el equipo, así que se tomó la vía de la **API simulada del servicio**. La API cumple las condiciones del enunciado:
+## Arquitectura y configuración
 
-| Condición del enunciado | Cómo se cumple |
+El generador de tráfico consulta la API. La API escribe NDJSON en logs/api.log; Filebeat lee el archivo y lo envía a Elasticsearch. Heartbeat consulta /api/health cada 10 segundos. Kibana representa los logs, los chequeos y las alertas calculadas por un evaluador local de Node.js. Los contenedores se coordinan con docker-compose.yml.
+
+| Componente | Responsabilidad |
 |---|---|
-| Un endpoint por cada elemento del catálogo de la Fase 1 | 8 endpoints, uno por elemento (sección 4.1). Una prueba automática verifica que coincidan con el catálogo. |
-| Respuestas exitosas y errores 4xx y 5xx en una proporción definida y documentada | 80% éxito, 15% 4xx y 5% 5xx, configurable por variables de entorno (sección 4.2). |
-| Tiempos de respuesta variables | Latencia aleatoria por endpoint, con picos lentos ocasionales. La API espera ese tiempo antes de responder (sección 4.2). |
-| Logs generados automáticamente desde el código, con los campos indicados | Un middleware registra cada petición en `logs/api.log` (sección 4.3). |
-| Generador de tráfico continuo | `scripts/traffic-generator.mjs` (sección 4.4). |
+| API y generador | Node.js 22. Ocho rutas del catálogo, salud y tráfico continuo de unas 5 peticiones/s por defecto. |
+| Filebeat 8.19.5 | Input filestream con parser ndjson; preserva campos ECS y timestamp original. |
+| Heartbeat 8.19.5 | Consulta HTTP cada 10 s; exige respuesta 200 y status up; timeout 5 s. |
+| Elasticsearch y Kibana 8.19.5 | Logs en filebeat-*, chequeos en heartbeat-* y dashboard Lens. |
+| Evaluador local | Consulta cada 10 s; ventana móvil de 5 min; estado y transiciones en bevstack-monitoring-current y bevstack-monitoring-events. |
 
-La simulación representa las dependencias descritas en la Fase 1 (sección 2.3, *Socios y proveedores*). Los errores 502 corresponden a fallas de proveedores externos: pasarela de pago (`payment_gateway_error`), transportista (`carrier_unavailable`), fulfillment (`fulfillment_unavailable`) y feed de inventario del retailer (`inventory_feed_error`). Así el dashboard permite distinguir si una falla está en Bevstack o en un proveedor, que es lo que la Fase 1 pide identificar antes de decidir la ruta de atención.
+## Catálogo y generación de datos
 
-## 3. Arquitectura
+| Elemento del catálogo | Método y ruta agrupada |
+|---|---|
+| Activación de nueva tienda | POST /api/stores |
+| Cambio de reglas de envío | PUT /api/stores/:storeId/shipping-rules |
+| Configuración de productos | PATCH /api/products/:sku |
+| Configuración operativa | PUT /api/stores/:storeId/operational-config |
+| Pedido no procesado | POST /api/orders |
+| Inventario incorrecto | GET /api/inventory/:sku |
+| Pago sin creación de pedido | POST /api/payments |
+| Envío no disponible | GET /api/shipping/options |
 
-```
-                         ┌───────────────────────── docker compose (local) ─────────────────────────┐
-                         │                                                                            │
-  generador de tráfico ──┼─▶ API simulada ──escribe──▶ logs/api.log ──lee──▶ Filebeat ──▶ Elasticsearch ◀── Kibana :5601
-  (traffic, ~5 req/s)    │   (api :4000)              (NDJSON · ECS)                       (:9200)          (dashboard)
-                         │        ▲                                                           ▲            │
-                         │        └──────── GET /api/health cada 10 s ──── Heartbeat ─────────┘            │
-                         └────────────────────────────────────────────────────────────────────────────┘
-```
+La configuración predeterminada asigna 80% de probabilidad de éxito, 15% de 4xx y 5% de 5xx. Son probabilidades por petición, por lo que una muestra finita puede variar. CLIENT_ERROR_RATE y SERVER_ERROR_RATE permiten cambiarlas. La latencia varía por endpoint y 5% de peticiones recibe un retardo de cuatro veces su base, con máximo de 3000 ms. La API espera ese tiempo antes de responder; la duración registrada se mide durante la petición.
 
-| Componente | Tecnología | Función |
+scripts/traffic-generator.mjs ejecuta peticiones continuamente, varía parámetros y distribuye las rutas con mayor peso para inventario, envíos, pedidos y pagos. Si la API está caída registra fallos de red y sigue intentando. REQUESTS_PER_SECOND controla la frecuencia; en Compose se usa TRAFFIC_RPS.
+
+El logger genera una línea JSON por petición con @timestamp, http.request.method, http.response.status_code, event.duration, url.path, service.name y log.level. event.duration se expresa en nanosegundos y se divide entre 1 000 000 para visualizar milisegundos. labels.route agrupa parámetros variables; labels.catalog_item y labels.catalog_type identifican el catálogo, y error.code describe el error simulado.
+
+La muestra logs/sample-api.log contiene 500 registros generados por la API: 399 info, 77 warn y 24 error. Incluye las ocho rutas y salud, sin fabricar líneas manualmente. Los datos se conservan en volúmenes de Docker y el archivo de logs se monta desde el proyecto; la API simulada no usa Supabase.
+
+## Lectura del dashboard
+
+La lectura comienza por las fechas de Heartbeat, logs y evaluador. Una señal de más de 45 segundos no acredita el estado actual. La cola vacía requiere comprobar esas fechas: si el evaluador dejó de publicar, no se puede concluir que el servicio esté sano. Las fechas de Kibana se configuran en UTC.
+
+| Visualización exigida | Interpretación |
+|---|---|
+| Tráfico de peticiones | Conteo de peticiones del catálogo por minuto. Incidente/Solicitud son tipos del catálogo, no cantidades de tickets. |
+| Tiempo de respuesta promedio | Media de todas las respuestas en ms, conservada por el enunciado. Contrastar con p50/p95 de exitosas y detalle por ruta. |
+| Estado del sistema up / down | Chequeos de Heartbeat por intervalo y último estado reportado, acompañado de su fecha. |
+| Distribución por códigos HTTP | Respuestas agrupadas por código. Las peticiones de salud se excluyen de las métricas de catálogo. |
+| Error rate en el tiempo | Series separadas de 4xx y 5xx, con denominador de peticiones del catálogo. |
+| Top endpoints | Rutas más consultadas agrupadas por labels.route. |
+
+Los percentiles p50 y p95 se calculan sobre respuestas exitosas 2xx/3xx para que un error rápido no mejore artificialmente la experiencia aparente. El detalle por ruta incluye n total, n exitosas, media y p95, además de 4xx y 5xx. El evaluador exige al menos 50 éxitos por ruta antes de decidir por latencia. Los percentiles de Elasticsearch son aproximados.
+
+Los gráficos no interpolan linealmente los periodos sin datos. El porcentaje de chequeos up describe el intervalo observado; no se presenta como el SLA de atención del Service Desk. Los gráficos siguen el selector temporal, mientras las reglas evalúan siempre cinco minutos. La cola guarda la última evaluación y no reconstruye alertas históricas al cambiar el selector.
+
+## Prioridades y reglas de atención
+
+Las reglas se configuran en monitoring/policy.json. Son propuestas del equipo para esta simulación, no umbrales exigidos por ITIL ni acuerdos aprobados con las marcas. El evaluador espera 60 segundos al arrancar y después evalúa cada 10 segundos.
+
+| Prioridad | Condición | Responsable y actuación |
 |---|---|---|
-| API simulada | Node.js 22, sin dependencias (`node:http`) | Expone los 8 endpoints del catálogo y `/api/health`, y escribe un log JSON por petición. |
-| Generador de tráfico | Node.js (`scripts/traffic-generator.mjs`) | Envía peticiones HTTP reales y continuas a la API. |
-| Filebeat 8.19.5 | Input `filestream` + parser `ndjson` | Lee `logs/api.log` y envía cada línea a Elasticsearch. |
-| Heartbeat 8.19.5 | Monitor `http` | Consulta `/api/health` cada 10 s y registra `up`/`down` y el tiempo de respuesta. |
-| Elasticsearch 8.19.5 | Nodo único | Almacena los logs (`filebeat-*`) y los chequeos (`heartbeat-*`). |
-| Kibana 8.19.5 | Lens + dashboards | Visualiza la salud del sistema. |
+| P1 | Dos chequeos distintos down recientes; o 5xx globales ≥30%, n≥100 en 5 min. | Tech verifica y restaura. Account Management valida alcance, marcas y comunicación. |
+| P2 | Logs o Heartbeat sin actualizar >45 s; 5xx por ruta ≥10%, n≥50; p95 exitosas sobre objetivo, n exitosas≥50. | Tech revisa recolector, ruta, cambio reciente y dependencia. AM contrasta experiencia e impacto. |
+| P3 | 4xx por ruta ≥30%, n≥50; o tráfico esperado ausente >60 s con logs recientes. | AM/Customer Success validan datos y demanda. Tech apoya y verifica el generador. |
 
-Se eligió Filebeat en lugar de Logstash porque los logs ya salen estructurados en formato ECS desde la API: no hace falta transformarlos, solo recolectarlos. Filebeat consume mucha menos memoria (unos 75 MB en la corrida, frente a los cientos que necesita Logstash) e instala por su cuenta la plantilla ECS en Elasticsearch.
+Las tasas y la latencia requieren dos evaluaciones consecutivas para activar y dos para recuperar. La disponibilidad exige dos chequeos distintos tanto para caída como para recuperación. La recuperación exige 5xx globales <15%, 5xx por ruta <8%, 4xx por ruta <24% y latencia de 80% del objetivo o menos. Una muestra insuficiente conserva una alerta activa; no demuestra recuperación. Las ventanas se superponen y no son muestras independientes.
 
-## 4. Configuración
+Los objetivos provisionales de p95 exitosas son: pagos 1500 ms, pedidos 1200 ms, inventario 350 ms, envíos 500 ms, tienda nueva 1000 ms y configuraciones 750 ms. Deben revisarse con una línea base y objetivos acordados con las marcas. Las proporciones de error de la simulación no son objetivos de calidad de producción.
 
-Todo el entorno se levanta con un comando: `docker compose up -d` (archivo `docker-compose.yml`). Los servicios arrancan en orden gracias a los *healthchecks*: Kibana, Filebeat y Heartbeat esperan a que Elasticsearch esté sano, y el generador espera a la API. Una tarea de un solo uso (`kibana-setup`) importa el dashboard en cuanto Kibana está disponible.
+Una caída agrupa síntomas secundarios y los 5xx globales agrupan errores por ruta. El estado interno de una alerta correlacionada se conserva; al desaparecer el padre vuelve a mostrarse si sigue activa. Se mantiene un documento actual por regla y un evento por transición visible. Antes de publicar se guarda un lote pendiente en disco. Si falla la publicación o el guardado, se reintenta ese mismo lote antes de consultar datos nuevos. El estado persistente y los identificadores estables evitan duplicar transiciones al reiniciar o reintentar.
 
-### 4.1 Endpoints
+## Validación comercial y seguimiento
 
-| Elemento del catálogo (Fase 1) | Tipo | Endpoint | Latencia base | Errores simulados |
-|---|---|---|---|---|
-| Activación de una nueva tienda | Solicitud | `POST /api/stores` | 120–450 ms | 400, 401, 409, 500, 502, 503 |
-| Cambio en reglas de envío | Solicitud | `PUT /api/stores/:storeId/shipping-rules` | 80–250 ms | 400, 401, 404, 500, 503 |
-| Actualización de configuración de productos | Solicitud | `PATCH /api/products/:sku` | 60–200 ms | 400, 401, 404, 500, 503 |
-| Cambio de configuración operativa | Solicitud | `PUT /api/stores/:storeId/operational-config` | 70–220 ms | 400, 401, 404, 500, 503 |
-| Pedido no procesado | Incidente | `POST /api/orders` | 150–600 ms | 400, 401, 409, 500, 502, 503 |
-| Inventario incorrecto | Incidente | `GET /api/inventory/:sku` | 20–120 ms | 400, 401, 404, 500, 502, 503 |
-| Pago completado sin creación del pedido | Incidente | `POST /api/payments` | 200–800 ms | 400, 401, 409, 500, 502, 503 |
-| Opción de envío no disponible | Incidente | `GET /api/shipping/options` | 40–180 ms | 400, 401, 404, 500, 502, 503 |
-| — (salud del servicio) | — | `GET /api/health` | inmediata | — |
+Account Management confirma el impacto y la urgencia. Un bloqueo de venta o cobro con alcance amplio tiene impacto alto; una operación o marca con alcance limitado tiene impacto medio; una corrección sin interrupción de venta tiene impacto bajo. La urgencia depende de la necesidad de restaurar y de la existencia de una alternativa viable. Un código HTTP no identifica por sí solo las marcas afectadas ni los ingresos perdidos.
 
-### 4.2 Proporción de errores y latencia
+| Impacto / urgencia | Alta | Media | Baja |
+|---|---|---|---|
+| Alto | P1 | P2 | P2 |
+| Medio | P2 | P2 | P3 |
+| Bajo | P3 | P3 | P3 |
 
-En cada petición a un endpoint del catálogo, el simulador (`api/simulation.mjs`) decide dos cosas:
+La matriz es una propuesta pendiente de validación por el equipo. P1 requiere atención inmediata propuesta; no se inventan plazos contractuales. Tech verifica evidencia y restaura, mientras AM coordina la comunicación. Soporte busca un incidente existente antes de crear otro y registra el inicio observado, el impacto, el responsable y la próxima actualización.
 
-1. **Resultado:** 5% de probabilidad de error 5xx (`SERVER_ERROR_RATE=0.05`), 15% de error 4xx (`CLIENT_ERROR_RATE=0.15`) y 80% de éxito. El código concreto se elige entre los errores posibles del endpoint.
-2. **Latencia:** un valor uniforme dentro del rango base del endpoint. El 5% de las peticiones es lento (×4), con tope de 3000 ms. La API espera ese tiempo antes de responder, así que la duración registrada es real.
+Una alerta requiere revisión; el incidente se registra o actualiza al validar una interrupción o degradación. Después de restaurar se comprueban los endpoints afectados y se valida la experiencia con AM antes de cerrar. La repetición de fallos motiva una investigación de problema y causa raíz, con responsable y acción de mejora. Los cambios no se ejecutan automáticamente desde el dashboard.
 
-Las proporciones se pueden cambiar sin tocar código. Por ejemplo, `SERVER_ERROR_RATE=0.4 docker compose up -d api` simula un incidente. Una prueba automática verifica, sobre 20 000 decisiones, que la proporción obtenida queda a menos de un punto porcentual de la configurada.
+## Resultados de la validación
 
-### 4.3 Logs de la API
+Se validó la ventana del 15 de noviembre de 2026 de 18:20:47 a 18:40:30 UTC. Elasticsearch almacenó 7036 peticiones del catálogo: 3936 exitosas, 1108 con 4xx y 1992 con 5xx. La media de todas las respuestas fue 236.7 ms; entre las exitosas, p50 fue 144.7 ms y p95, 671.8 ms. Heartbeat registró 82 chequeos up y 21 down. Estos resultados incluyen fallos provocados y dos frecuencias de tráfico; no describen una línea base ni un SLA de producción.
 
-Un middleware de `api/app.mjs` registra cada petición, sea exitosa, de error o una excepción, con una línea JSON en `logs/api.log`. Los campos siguen Elastic Common Schema (ECS):
+La caída de API activó una P1 a las 18:22:09 UTC y registró recuperación a las 18:25:39. Al detener Heartbeat, la pérdida de señal activó P2 a las 18:26:56 y se recuperó a las 18:28:56. Una falla aislada durante la recreación de contenedores no abrió una nueva P1 de caída.
 
-| Campo requerido | Valor en el log |
-|---|---|
-| `@timestamp` | Momento de llegada de la petición (ISO 8601, UTC). |
-| `http.request.method` | `GET`, `POST`, `PUT`, `PATCH`, … |
-| `http.response.status_code` | Código HTTP devuelto (número). |
-| `event.duration` | Duración en nanosegundos, como define ECS. |
-| `url.path` | Ruta real, por ejemplo `/api/inventory/SKU-618`. |
-| `service.name` | `bevstack-ecommerce-api`. |
-| `log.level` | `info` (2xx), `warn` (4xx) o `error` (5xx). |
+Se aumentó temporalmente SERVER_ERROR_RATE a 0.60 y TRAFFIC_RPS a 20. Los errores generalizados activaron P1 a las 18:30:40; los errores por ruta quedaron correlacionados. Tras restaurar los valores predeterminados, la alerta global se recuperó a las 18:36:32. El historial contiene una activación y una recuperación para cada una de esas tres reglas principales.
 
-Además se agregan campos que hacen el dashboard más útil para soporte:
+Al cierre quedó activa P2 en reglas de envío: 7 errores 5xx en 72 peticiones de la última ventana, 9.7%. Aunque ya estaba bajo el 10% de activación, todavía no cumplía la recuperación bajo 8%. Corresponde revisar la ruta y esperar confirmación; el up del ambiente no basta para cerrar esa señal.
 
-- `labels.route`: plantilla de la ruta, por ejemplo `/api/inventory/:sku`, para agrupar el top de endpoints.
-- `labels.catalog_item` y `labels.catalog_type`: el elemento del catálogo y si es Incidente o Solicitud, como en la Fase 1.
-- `error.code` y `error.message` en cada fallo.
-- `event.outcome`: `success` o `failure`.
+Se aprobaron 109 pruebas en el repositorio y pnpm build terminó correctamente. La entrega aislada incluye 56 pruebas de Fase 3, también aprobadas. Una prueba adicional reprodujo publicación exitosa con fallo de guardado local y verificó que el lote pendiente se recupere sin perder ni duplicar la transición.
 
-Ejemplo real (502 por falla del feed de inventario):
+Las pruebas automáticas cubren confirmación de caída, datos atrasados, muestra mínima, latencia de exitosas, histéresis, recuperación, correlación, persistencia de transiciones y errores de consulta o publicación. También comprueban las seis visualizaciones, campos, referencias y configuración de las tablas. El frontend se valida con pnpm build.
 
-```json
-{"@timestamp":"2026-11-12T03:10:38.834Z","log":{"level":"error","logger":"http"},"message":"GET /api/inventory/SKU-502 502 inventory_feed_error","ecs":{"version":"8.11.0"},"service":{"name":"bevstack-ecommerce-api","environment":"local"},"event":{"kind":"event","category":["web"],"type":["access"],"outcome":"failure","duration":54712916},"http":{"request":{"method":"GET"},"response":{"status_code":502}},"url":{"path":"/api/inventory/SKU-502"},"labels":{"route":"/api/inventory/:sku","catalog_item":"incorrect-inventory","catalog_type":"Incidente"},"error":{"code":"inventory_feed_error","message":"El feed de inventario del retailer falló."}}
-```
+## Reproducción y límites
 
-La muestra entregable `logs/sample-api.log` tiene **205 registros** generados por la API real con `pnpm logs:sample`.
+Extraer la entrega, abrir una terminal en la carpeta que contiene docker-compose.yml y ejecutar docker compose up -d. Se requiere Docker con memoria suficiente para Elasticsearch y Kibana y acceso a las imágenes. Abrir http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring cuando Kibana y la importación estén listos. La primera corrida puede tardar por las descargas.
 
-### 4.4 Generador de tráfico
+Para repetir la caída: docker compose stop api; esperar al menos dos chequeos down y la siguiente evaluación; revisar P1; ejecutar docker compose start api y comprobar dos up recientes. Para comprobar pérdida de señal: detener solo heartbeat, esperar más de 45 segundos y dos evaluaciones; verificar P2 y restaurar heartbeat. Los gráficos conservan el historial de estas pruebas.
 
-`scripts/traffic-generator.mjs` corre como el servicio `traffic` del compose, o con `pnpm traffic` en local. Envía peticiones de forma continua, a unas 5 por segundo con una variación de ±50% entre peticiones, para que el tráfico tenga ráfagas. Elige el endpoint con pesos que imitan la operación descrita en la Fase 1: los consumidores consultan productos y opciones de envío mucho más de lo que las marcas cambian configuraciones.
+docker compose down detiene los servicios y conserva los volúmenes; down -v elimina los datos y el estado. El evaluador se ejecuta como una sola instancia. Si falla la consulta o la escritura no adelanta el estado ni declara recuperación; el operador debe vigilar la fecha de evaluación. La caída completa del host o de Elasticsearch exige vigilancia externa.
 
-| Endpoint | Peso |
-|---|---|
-| Inventario | 25 |
-| Opciones de envío | 20 |
-| Pedidos | 15 |
-| Pagos | 12 |
-| Productos | 10 |
-| Reglas de envío | 6 |
-| Configuración operativa | 5 |
-| Nueva tienda | 4 |
+La configuración es local y mantiene deshabilitada la seguridad de Elastic. No se presenta como una instalación de producción. Las alertas permanecen en Elasticsearch y Kibana; no hay notificaciones externas ni tickets automáticos. La API y el evaluador siguen separados del frontend y Supabase.
 
-Varía los parámetros de cada petición (SKU, tienda, zona, montos) y cada 10 s imprime cuántas respuestas lleva y qué porcentaje fueron 2xx, 4xx y 5xx. Si la API no responde, sigue intentando y cuenta esas peticiones como "sin respuesta", lo que permite observar una caída en el dashboard.
+## Referencias
 
-### 4.5 Filebeat (`elk/filebeat.yml`)
+PeopleCert. ITIL 4 Practitioner Monitoring and Event Management. https://www.peoplecert.org/professionals/certifications/browse-certifications/it-governance-and-service-management/ITIL-1/itil4-practices-monitoring-and-event-management-3686
 
-- Input `filestream` sobre `/logs/api.log`.
-- Parser `ndjson` con `target: ""`, para que los campos queden en la raíz del documento, y `overwrite_keys: true`, para conservar el `@timestamp` de la API y no la hora de ingesta.
-- Salida al data stream `filebeat-8.19.5`, con la plantilla ECS. Así `event.duration` y `http.response.status_code` se indexan como `long`, y `labels.*` y `error.code` como `keyword`, lo que permite promediar y agrupar.
+Google SRE. Monitoring Distributed Systems. https://sre.google/sre-book/monitoring-distributed-systems/
 
-### 4.6 Heartbeat (`elk/heartbeat.yml`)
+Elastic. Create visualizations with Lens 8.19. https://www.elastic.co/guide/en/kibana/8.19/lens.html
 
-Monitor `http` (`bevstack-api-health`) cada 10 s sobre `http://api:4000/api/health`, con *timeout* de 5 s. El chequeo es `up` solo si la respuesta es 200 y el JSON trae `"status":"up"`. Como todos los endpoints viven en la misma API, un único monitor basta para saber que el ambiente que los expone está arriba, tal como permite el enunciado.
+La aplicación combina la observación y gestión de eventos de ITIL 4 con criterios de monitoreo de SRE y las capacidades de Lens. Es una aplicación de prácticas pertinentes al alcance del curso, no una certificación de cumplimiento integral de ITIL.
 
-### 4.7 Dashboard de Kibana
+## Evidencias del dashboard
 
-El dashboard **"Bevstack · Monitoreo de la API (Fase 3)"** (`kibana/dashboard.ndjson`) usa dos data views: `filebeat-*` para los logs y `heartbeat-*` para la disponibilidad. Por defecto muestra los últimos 15 minutos y se refresca cada 10 s.
+Las capturas de las pruebas conservan la evaluación mostrada al pausar Kibana. Se afinó la banda de recuperación por ruta durante la validación; la política adjunta contiene los valores finales.
 
-| Visualización requerida | Panel | Cálculo |
-|---|---|---|
-| Tráfico de peticiones | *Tráfico de peticiones* (barras apiladas) y KPI *Peticiones totales* | Conteo por intervalo de `@timestamp`, separado por `labels.catalog_type`. |
-| Tiempo de respuesta promedio | *Tiempo de respuesta promedio* (línea y KPI) | `average(event.duration) / 1000000`, en ms. |
-| Estado del sistema (up / down) | *Estado del sistema (up / down)* (verde/rojo), KPI *último chequeo* y KPI *Disponibilidad* | Conteo de `monitor.status` por intervalo, último valor y `count(up) / count()`. |
-| Distribución por códigos HTTP | *Distribución por códigos HTTP* (dona) | Términos de `http.response.status_code`. |
-| Error rate | *Error rate en el tiempo* (línea) y KPI *Error rate* | `count(status_code >= 400) / count()`. |
-| Top endpoints | *Top endpoints (rutas más consultadas)* (barras horizontales) | Top 10 de `labels.route` por conteo. |
-
-Se agregaron dos paneles para el análisis de soporte:
-
-- **Errores por causa** (`error.code`): muestra qué proveedor o validación falla más.
-- **Detalle por endpoint**: tabla con peticiones, tipo, latencia promedio y error rate de cada endpoint.
-
-Los KPI usan colores por umbral:
-
-- **Disponibilidad:** roja por debajo de 95%, en línea con el umbral de cumplimiento de la Fase 1.
-- **Error rate:** verde por debajo de 25% (incluye el 20% de errores simulados), amarilla hasta 40% y roja por encima, lo que indica un incidente.
-- **Latencia:** verde por debajo de 400 ms, amarilla hasta 800 ms y roja por encima.
-
-## 5. Resultados
-
-Corrida local del 11 de noviembre de 2026 (hora de Guatemala), con el stack completo y la configuración por defecto:
-
-| Métrica | Resultado |
-|---|---|
-| Documentos de log indexados | **2 510** en ~9 min (21:27–21:36), unos 4.7 por segundo |
-| Respuestas 2xx / 4xx / 5xx | 80.3% / 14.9% / 4.8% (configurado: 80 / 15 / 5) |
-| Niveles de log | 2 015 `info` · 375 `warn` · 120 `error` |
-| Tiempo de respuesta promedio / p95 | 220 ms / 630 ms |
-| Incidentes / solicitudes | 1 865 / 608 peticiones (más 37 de `/api/health`) |
-| Endpoint más consultado | `/api/inventory/:sku`: 689 peticiones, 85 ms en promedio |
-| Endpoint más lento | `/api/payments`: 548 ms en promedio |
-| Chequeos de Heartbeat | 41: 37 `up` y 4 `down`, con un tiempo de respuesta medio de 3.7 ms |
-
-**Prueba de caída.** A las 21:30 se detuvo la API (`docker compose stop api`) durante 40 s. Lo que se observó:
-
-- Heartbeat registró 4 chequeos `down` (21:30:39–21:31:09) con `error.message: "lookup api … no such host"`, y luego volvió a `up` al reiniciarla.
-- En el dashboard, la caída aparece en rojo en *Estado del sistema*, la disponibilidad bajó del 100% y el tráfico de esos minutos cae, porque el generador no obtuvo respuesta.
-
-Esto demuestra que el monitoreo detecta una indisponibilidad real en menos de 10 s.
-
-### Evidencias
-
-- **Dashboard completo:** [`docs/img/dashboard-kibana.png`](img/dashboard-kibana.png), capturado a las 21:43 con la ventana de los últimos 15 minutos (21:28–21:43).
-  - 4 075 peticiones, error rate de 19.5% y 229 ms de tiempo de respuesta promedio.
-  - Disponibilidad de 95.0%: la prueba de caída de las 21:30 aparece en rojo y deja el KPI en amarillo.
-  - Último chequeo: `up`.
-
-  ![Dashboard de Kibana](img/dashboard-kibana.png)
-
-- **Muestra de logs:** `logs/sample-api.log` (205 registros).
-- **Configuración:** `docker-compose.yml`, `elk/filebeat.yml` y `elk/heartbeat.yml`.
-- **Dashboard exportado:** `kibana/dashboard.ndjson`.
-- **Pruebas automáticas** (`pnpm test`):
-  - formato y campos de los logs;
-  - proporción de errores;
-  - latencia variable;
-  - correspondencia con el catálogo;
-  - generador de tráfico contra la API real;
-  - arranque de la API;
-  - contenido del dashboard (las 6 visualizaciones requeridas y sus referencias).
-
-### Cumplimiento de la rúbrica
-
-| Criterio | Peso | Evidencia |
-|---|---|---|
-| Configuración funcional del stack ELK | 25% | `docker-compose.yml` (Elasticsearch, Kibana, Filebeat y Heartbeat) y `elk/filebeat.yml`. Logs indexados en `filebeat-*` con mapeo ECS verificado. |
-| Integración con logs reales | 25% | Los logs los genera el código de la API (`api/app.mjs`, `api/logger.mjs`) por cada petición del generador. Hay muestra en `logs/sample-api.log`. |
-| Implementación de Heartbeat | 15% | `elk/heartbeat.yml`. Se refleja en los paneles *Estado del sistema*, *Disponibilidad* y *último chequeo*, y fue probado con una caída real. |
-| Dashboard de monitoreo | 25% | `kibana/dashboard.ndjson`: las 6 visualizaciones requeridas más 2 de análisis, con los KPI en la captura. |
-| Informe técnico | 10% | Este documento. |
-
-## 6. Conclusiones y limitaciones
-
-- **El valor de los logs estructurados.** Que la API escriba logs ECS desde el código simplificó el pipeline: Filebeat solo recolecta, sin transformar nada, y Kibana puede agrupar por ruta, tipo de caso del catálogo y causa del error.
-- **Vínculo con el proceso de soporte.** Separar incidentes y solicitudes en los logs (`labels.catalog_type`) mantiene la lógica de las fases 1 y 2. Los errores por causa (`error.code`) ayudan a soporte a decidir si escalar al Team de Tech o a un proveedor externo.
-- **Detección de caídas.** Heartbeat complementa los logs: cuando la API cae, deja de escribir logs, y sin un monitor externo esa caída pasaría por "poco tráfico".
-- **Limitaciones:**
-  - El entorno es local y de un solo nodo, con la seguridad de Elasticsearch desactivada para simplificar la demo. En producción habría que activar TLS y usuarios, darle más de un nodo a Elasticsearch y definir políticas de retención (ILM).
-  - La API es simulada: las proporciones de error y la latencia son configuradas, no observadas en un sistema real.
-  - El error rate incluye los 4xx simulados (errores del cliente). Para alertas de disponibilidad conviene usar solo los 5xx.
-
-## 7. Cómo reproducir
-
-```bash
-docker compose up -d        # levanta todo; la primera vez descarga ~3 GB de imágenes
-# Esperar 1–2 minutos y abrir:
-# http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring
-docker compose stop api     # simular una caída (se ve en rojo en ≤10 s)
-docker compose start api
-docker compose down -v      # detener y borrar los datos
-```
-
-Requisitos: Docker Desktop con al menos 4 GB de memoria asignada y el puerto 4000 libre. La documentación técnica completa está en [`docs/fase-3-monitoreo.md`](fase-3-monitoreo.md).
+![Dashboard completo de la corrida validada](img/dashboard-kibana.png)
