@@ -47,7 +47,7 @@ for(const [i,p] of original.entries()){
     if(c.operationType==='count')c.params.emptyAsNull=true;
   }
   if(i===0){p.title=a.title='Último estado reportado · verificar fecha';grid(p,0,10,12,7);}
-  if(i===1){p.title=a.title='Chequeos up en el periodo · no es SLA';grid(p,12,10,12,7);}
+  if(i===1){p.title=a.title='Chequeos up en el periodo';grid(p,12,10,12,7);}
   if(i===2){p.title=a.title='Peticiones de catálogo · n';grid(p,0,43,12,7);}
   if(i===3){p.title=a.title='Errores de servidor · 5xx';const id=s.visualization.metricAccessor;l.columns={};rate(l.columns,id,'http.response.status_code >= 500','5xx / peticiones');l.columnOrder=Object.keys(l.columns);grid(p,12,43,12,7);}
   if(i===4){p.title=a.title='p95 de respuestas exitosas';const id=s.visualization.metricAccessor;l.columns={};math(l.columns,id,'percentile','event.duration',`percentile(event.duration, percentile=95, kql='${success}') / 1000000`,'p95 exitosas',success,95);l.columnOrder=Object.keys(l.columns);grid(p,36,43,12,7);}
@@ -88,13 +88,30 @@ const pc={date};
 for(const n of [50,95])math(pc,'p'+n,'percentile','event.duration',`percentile(event.duration, percentile=${n}, kql='${success}') / 1000000`,'p'+n+' exitosas',success,n);
 const xy=structuredClone(stateOf(original[6]).visualization);xy.fittingFunction='None';xy.layers[0].xAccessor='date';xy.layers[0].accessors=['p50','p95'];xy.layers[0].yConfig=[{forAccessor:'p50',color:'#6092C0'},{forAccessor:'p95',color:'#A864C1'}];
 addLens(106,'Latencia exitosa · p50 y p95','bevstack-api-logs',pc,Object.keys(pc),'lnsXY',(id)=>({...xy,layers:xy.layers.map(l=>({...l,layerId:id}))}),business,0,62,48,12,'Percentiles aproximados por intervalo; validar mínimo n=50 exitosas por ruta en la cola y la tabla. No se interpola sobre huecos.');
+// Payment latency gets its own route-specific view so its provisional target is
+// not incorrectly compared against the aggregate latency of all catalog routes.
+const paymentLayer='operational-108', paymentTargetLayer='payment-target-108';
+const paymentColumns={date:structuredClone(date)};
+math(paymentColumns,'paymentP95','percentile','event.duration',`percentile(event.duration, percentile=95, kql='${success}') / 1000000`,'p95 pagos exitosos',success,95);
+const paymentXY={...structuredClone(xy),layers:[
+  {layerId:paymentLayer,layerType:'data',seriesType:'line',xAccessor:'date',accessors:['paymentP95'],yConfig:[{forAccessor:'paymentP95',color:'#18A8E0'}]},
+  {layerId:paymentTargetLayer,layerType:'referenceLine',accessors:['paymentTarget'],yConfig:[{forAccessor:'paymentTarget',color:'#D97706',lineStyle:'dotted',lineWidth:2,textVisibility:true}]},
+]};
+addLens(108,'Pagos · p95 exitoso vs objetivo','bevstack-api-logs',paymentColumns,Object.keys(paymentColumns),'lnsXY',paymentXY,'service.name: "bevstack-ecommerce-api" and labels.route: "/api/payments"',0,98,48,14,'Solo respuestas exitosas de POST /api/payments. La línea punteada marca el objetivo p95 provisional de 1500 ms; no es un SLA comercial. Interpretar con al menos 50 respuestas exitosas por ventana.');
+const paymentPanel=panels.at(-1);
+const paymentState=stateOf(paymentPanel);
+paymentState.datasourceStates.formBased.layers[paymentTargetLayer]={
+  columns:{paymentTarget:{label:'Objetivo p95 pagos · 1500 ms',dataType:'number',operationType:'static_value',isBucketed:false,scale:'ratio',params:{value:'1500'},references:[],customLabel:true}},
+  columnOrder:['paymentTarget'],incompleteColumns:{},
+};
+paymentPanel.embeddableConfig.attributes.references.push({type:'index-pattern',id:'bevstack-api-logs',name:`indexpattern-datasource-layer-${paymentTargetLayer}`});
 markdown(107,'Reglas y atención',`**P1:** 2 chequeos distintos down recientes; o ≥30% 5xx con n≥100 en 5 min, confirmado en 2 evaluaciones. **P2:** logs/Heartbeat sin actualizar >45 s; 5xx por ruta ≥10% con n≥50; p95 exitosas sobre objetivo con n exitosas≥50. **P3:** 4xx por ruta ≥30% con n≥50; tráfico esperado ausente >60 s.\n\n**Control de ruido:** 2 evaluaciones para activar y recuperar, salvo disponibilidad que exige 2 chequeos distintos. Recuperación: 5xx global <15%; 5xx por ruta <8%; 4xx por ruta <24%; latencia ≤80% del objetivo. Una caída agrupa sus síntomas; se guarda una transición por cambio. Sin datos no se declara recuperación.\n\n**Objetivos provisionales de p95:** pagos 1500 ms; pedidos 1200; inventario 350; envíos 500; tienda nueva 1000; configuraciones 750. El 5% 5xx y 15% 4xx de la simulación no son objetivos de calidad para producción.\n\n**Atención:** Tech verifica y restaura; Account Management valida alcance y urgencia por marca, actualiza al cliente y coordina seguimiento. Crear o actualizar un incidente tras validación humana; fallos repetidos se investigan como problema. Ver docs/fase-3-alertas.md.`,115,14);
 const layout={10:[0,6],17:[6,4],24:[10,13],43:[23,6],50:[29,11],62:[40,10],74:[50,11],86:[61,12],99:[73,13],115:[86,12]};
 for(const p of panels){const adjusted=layout[p.gridData.y];if(adjusted){p.gridData.y=adjusted[0];p.gridData.h=adjusted[1];}}
 for(const p of panels)if(p.type==='lens')for(const ref of p.embeddableConfig.attributes.references)references.push({...ref,name:p.panelIndex+':'+ref.name});
 dashboard.attributes.panelsJSON=JSON.stringify(panels);
 dashboard.attributes.title='Bevstack · Salud y atención del servicio (Fase 3)';
-dashboard.attributes.description='Monitoreo de API: prioridad técnica, responsables, siguiente paso, frescura, percentiles, errores y disponibilidad. Umbrales provisionales de simulación.';
+dashboard.attributes.description='Monitoreo de API: prioridad técnica, responsables, siguiente paso, frescura, percentiles, errores y disponibilidad. El panel final acerca el monitoreo a la operación de pagos de Bevstack.';
 dashboard.references=references;
 if(!objects.some(o=>o.id==='bevstack-monitoring-current'&&o.type==='index-pattern'))objects.unshift({id:'bevstack-monitoring-current',type:'index-pattern',attributes:{name:'Alertas operativas actuales',title:'bevstack-monitoring-current',timeFieldName:'@timestamp'},references:[]});
 await writeFile(file,objects.map(o=>JSON.stringify(o)).join('\n')+'\n');

@@ -12,6 +12,10 @@ logs/*.log
 *.pdf
 *.zip
 
+# Archivos Markdown locales o de trabajo; conservar solo el README raíz.
+*.md
+!/README.md
+
 # Archivos finales verificados de Fase 3 solicitados para publicar.
 !docs/entrega-fase-3/Informe-tecnico-Fase-3-Bevstack.pdf
 !docs/entrega-fase-3/Entrega-Fase-3-Bevstack.zip

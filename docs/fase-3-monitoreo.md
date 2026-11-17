@@ -43,6 +43,7 @@ La API simulada **no usa Supabase ni otra base de datos**. Vive en `api/` y no t
 | 5 | B | `feat: add Heartbeat monitor`: `heartbeat.yml` | ✅ Listo |
 | 6 | B | `docs: add Kibana dashboard and Phase 3 report`: export del dashboard, captura e informe | ✅ Listo |
 | 7 | Equipo | Mejora operativa: prioridades, percentiles, frescura, reglas y guía de atención | Validado localmente; documentación y entregables versionados en main |
+| 8 | Equipo | `feat: add Bevstack payment latency target panel`: p95 de pagos frente al objetivo provisional de 1500 ms | Importado en Kibana local; cambios aún sin commit |
 
 Todo corre **en local**; no se despliega nada nuevo en Render.
 
@@ -241,7 +242,7 @@ Variables opcionales al levantar: `TRAFFIC_RPS=10`, `SERVER_ERROR_RATE=0.4` (sim
 
 ### Dashboard de Kibana
 
-El dashboard **Bevstack · Salud y atención del servicio (Fase 3)** se importa automáticamente y está en http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring. Conserva las seis visualizaciones obligatorias y añade una cola de alertas priorizada, fechas de las fuentes, p50/p95 exitosas y detalle por ruta con volumen de muestra. Los gráficos dejan huecos sin interpolarlos y separan 4xx y 5xx.
+El dashboard **Bevstack · Salud y atención del servicio (Fase 3)** se importa automáticamente y está en http://localhost:5601/app/dashboards#/view/bevstack-api-monitoring. Conserva las seis visualizaciones obligatorias y añade una cola de alertas priorizada, fechas de las fuentes, p50/p95 exitosas y detalle por ruta con volumen de muestra. Los gráficos dejan huecos sin interpolarlos y separan 4xx y 5xx. Al final se añade **Pagos · p95 exitoso vs objetivo**: latencia p95 por minuto para `POST /api/payments` y una línea punteada de 1500 ms tomada de la política de monitoreo. Es un objetivo técnico provisional, no un SLA acordado. Las visualizaciones anteriores conservan sus métricas y filtros.
 
 Usa tres data views: `filebeat-*`, `heartbeat-*` y `bevstack-monitoring-current`. Las métricas de catálogo excluyen salud. La disponibilidad representa chequeos observados en el periodo; no es el SLA de atención del Service Desk. Las fechas se configuran en UTC al importar. Los gráficos usan el selector de tiempo; las reglas usan siempre los últimos 5 minutos. La cola muestra el estado actual, no una reconstrucción histórica.
 
